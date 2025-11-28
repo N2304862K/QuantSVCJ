@@ -3,16 +3,16 @@ from Cython.Build import cythonize
 import numpy
 
 ext = Extension(
-    "quantsvcj._wrapper",
-    sources=["quantsvcj/_wrapper.pyx", "src/svcj_engine.c"],
-    include_dirs=[numpy.get_include(), "src"],
+    "quantsvcj._quant_svcj",
+    sources=["_quant_svcj.pyx", "svcj.c"],
+    include_dirs=[numpy.get_include(), "."],
     extra_compile_args=["-O3", "-fopenmp"],
     extra_link_args=["-fopenmp"]
 )
 
 setup(
     name="QuantSVCJ",
-    version="2.0",
+    version="4.0.0",
     packages=["quantsvcj"],
     ext_modules=cythonize([ext]),
     install_requires=["numpy", "pandas", "cython"],

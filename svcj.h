@@ -1,6 +1,6 @@
-/* src/svcj_engine.h */
-#ifndef SVCJ_ENGINE_H
-#define SVCJ_ENGINE_H
+/* svcj.h */
+#ifndef SVCJ_H
+#define SVCJ_H
 
 typedef struct {
     double kappa;
@@ -12,9 +12,14 @@ typedef struct {
     double sigma_j;
 } SVCJParams;
 
-// Main Optimizer Entry Point
-SVCJParams optimize_core(double* returns, int n_ret, double dt,
+typedef struct {
+    SVCJParams p;
+    double spot_vol;
+    double jump_prob;
+    double error;
+} SVCJResult;
+
+SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                          double* strikes, double* prices, double* T_exp, int n_opts,
                          double S0, double r, int mode);
-
 #endif
