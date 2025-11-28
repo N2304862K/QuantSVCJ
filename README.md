@@ -21,7 +21,7 @@ Unlike standard libraries that rely on slow Python loops or heuristic approximat
 Install directly from GitHub (requires C compiler and OpenMP):
 
 ```bash
-pip install git+https://github.com/YourUsername/QuantSVCJ.git
+pip install git+https://https://github.com/N2304862K/QuantSVCJ
 ```
 
 ### 1. Single Asset Joint Calibration (Snapshot)
