@@ -22,10 +22,7 @@ Install directly from GitHub (requires C compiler and OpenMP):
 
 ```bash
 pip install git+https://github.com/YourUsername/QuantSVCJ.git
-
-## Usage Examples
-
-Data fetching uses `yfinance` purely for demonstration. The engine accepts standard Pandas/Numpy inputs.
+```
 
 ### 1. Single Asset Joint Calibration (Snapshot)
 Combines historical log returns with today's option chain for precise parameter estimation.
