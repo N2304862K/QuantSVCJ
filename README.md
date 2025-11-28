@@ -1,102 +1,60 @@
-# QuantSVCJ: High-Performance SVCJ Factor Engine
+# QuantSVCJ: Professional Factor Engine
 
-**QuantSVCJ** is a C-based estimation engine for the **Stochastic Volatility with Correlated Jumps (SVCJ)** model, designed for quantitative finance workflows. 
-
-Unlike standard libraries that rely on slow Python loops or heuristic approximations (Method of Moments), this engine implements **State-Space Filtering (Unscented Kalman Filter)** and **Joint Likelihood Optimization** directly in C. It uses OpenMP to parallelize multi-asset processing, making it suitable for generating volatility and jump features for large universes of assets.
-
-## Core Features
-
-1.  **Mathematical Rigor**:
-    *   **Time Series**: Replaces heuristics with an **Unscented Kalman Filter (UKF)** to recover latent volatility ($v_t$) and jump likelihoods.
-    *   **Options**: Implements joint calibration using characteristic functions (via complex arithmetic in C).
-2.  **Performance**:
-    *   **No Python Loops**: All iterative logic (optimization, filtering) is buried in low-level C.
-    *   **Parallelized**: Multi-asset feature generation uses OpenMP to saturate CPU cores.
-3.  **Desk Ready**: 
-    *   Separates data fetching (Yahoo Finance/Bloomberg) from analytics.
-    *   Returns clean Pandas structures or raw Numpy arrays.
+A high-performance C-Core engine for SVCJ calibration. Designed for quantitative desks, it handles raw price data, automates Spot ($S_0$) detection, and stabilizes edge-case volatility estimates.
 
 ## Installation
-
-Install directly from GitHub (requires C compiler and OpenMP):
-
 ```bash
-pip install git+https://https://github.com/N2304862K/QuantSVCJ
+pip install .
 ```
 
-### 1. Single Asset Joint Calibration (Snapshot)
-Combines historical log returns with today's option chain for precise parameter estimation.
+## Usage (Live Data)
+
+This engine is designed to take raw **Prices** and **Option Chains**. It handles the return calculations and Spot extraction internally.
 
 ```python
 import yfinance as yf
 import pandas as pd
-import numpy as np
 from quantsvcj.api import QuantSVCJ
 
-# --- Data Fetching ---
-ticker = "SPY"
-# 1. History
-hist = yf.download(ticker, period="1y")['Close']
-log_rets = np.log(hist / hist.shift(1)).dropna()
+# --- 1. Snapshot Analysis (History + Options) ---
+# Download Prices (NOT returns)
+spy_prices = yf.download("SPY", period="1y", progress=False)['Close']
+if isinstance(spy_prices, pd.DataFrame): spy_prices = spy_prices.iloc[:,0]
 
-# 2. Option Chain (Mocking real chain for demo)
-# In production: opt = yf.Ticker("SPY").option_chain('2024-12-20').calls
-current_price = hist.iloc[-1]
-strikes = np.linspace(current_price*0.9, current_price*1.1, 10)
-prices = np.maximum(0, strikes - current_price) + np.random.uniform(0.5, 2.0, 10) # Mock prices
-options = pd.DataFrame({
-    'strike': strikes,
-    'price': prices,
-    'T': [0.1] * 10 # 0.1 years to expiry
-})
+# Download Option Chain
+tk = yf.Ticker("SPY")
+# Get first expiry
+exp = tk.options[0]
+opts = tk.option_chain(exp).calls
+# Format needed: strike, price, T
+# Calculate T in years
+T_years = (pd.Timestamp(exp) - pd.Timestamp.now()).days / 365.0
+opt_df = pd.DataFrame({
+    'strike': opts['strike'],
+    'price': opts['lastPrice'], # or mid
+    'T': T_years
+}).dropna()
 
-# --- Execution ---
-# Input: Series (History), DataFrame (Options), Rate
-params = QuantSVCJ.analyze_snapshot(
-    returns_series=log_rets,
-    option_chain=options,
-    risk_free_rate=0.05
-)
+# RUN: Pass raw prices + option DF
+# Engine detects S0 = spy_prices.iloc[-1] automatically.
+res = QuantSVCJ.analyze_snapshot(spy_prices, opt_df)
+print("Snapshot Params:\n", res)
 
-print(params)
-# Output: kappa, theta, sigma_v, rho...
+# --- 2. Rolling Analysis ---
+# Pass raw prices, engine handles log-ret conversion and rolling window
+rolling = QuantSVCJ.analyze_rolling(spy_prices, window=100)
+print("\nRolling Factors (Tail):\n", rolling.tail())
+
+# --- 3. Market Screen ---
+# Pass raw price matrix
+tickers = ["AAPL", "MSFT", "GOOG"]
+df_multi = yf.download(tickers, period="6mo", progress=False)['Close']
+
+screen = QuantSVCJ.analyze_market_screen(df_multi)
+print("\nMarket Screen:\n", screen)
 ```
 
-### 2. Rolling Window Analysis
-Generates a time-series of factors (e.g., Jump Intensity $\lambda_t$) for backtesting.
-
-```python
-# Input: Series, Window Size
-# Returns: DataFrame indexed by Date
-rolling_factors = QuantSVCJ.analyze_rolling(
-    returns_series=log_rets,
-    window_size=100
-)
-
-print(rolling_factors.tail())
-# Output:
-# Date        kappa    theta    lambda ...
-# 2023-11-20  1.52     0.041    0.15
-# 2023-11-21  1.55     0.042    0.18
-```
-
-### 3. Market-Wide Screen (Multi-Asset)
-Screen the entire S&P 500 for volatility/jump regimes in milliseconds using parallel C execution.
-
-```python
-# --- Data Fetching ---
-tickers = ["AAPL", "MSFT", "GOOG", "AMZN", "TSLA"]
-data = yf.download(tickers, period="2y")['Close']
-returns_matrix = np.log(data / data.shift(1)).dropna()
-
-# --- Execution ---
-# Input: DataFrame (Index=Date, Cols=Assets)
-# Returns: DataFrame (Index=Assets, Cols=Params)
-screen_results = QuantSVCJ.analyze_market_screen(returns_matrix)
-
-print(screen_results)
-# Output:
-#       kappa  theta  sigma_v  lambda ...
-# AAPL  2.1    0.05   0.32     0.10
-# MSFT  1.8    0.04   0.28     0.05
-```
+## Technicals
+*   **Edge Stabilization**: The UKF uses an adaptive innovation threshold based on running variance to prevent false jump flags on the most recent data point.
+*   **Feller Condition**: Enforced via soft penalty in the C-optimizer.
+*   **Parallelism**: OpenMP used for Screening and Rolling windows.
