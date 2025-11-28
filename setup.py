@@ -1,43 +1,37 @@
-import os
-from setuptools import setup, Extension, find_packages
+import sys
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
 
-# --- ROBUST BUILD STRATEGY ---
-# Allows 'pip install' to read metadata before numpy/cython are installed.
-try:
-    from Cython.Build import cythonize
-    import numpy
-    HAS_BUILD_DEPS = True
-except ImportError:
-    HAS_BUILD_DEPS = False
+# Custom build class to defer numpy import until build time
+class CustomBuildExt(build_ext):
+    def finalize_options(self):
+        build_ext.finalize_options(self)
+        # Prevent numpy from being imported before it's installed
+        import builtins
+        builtins.__NUMPY_SETUP__ = False
+        import numpy
+        self.include_dirs.append(numpy.get_include())
 
-# Define Extension only if dependencies exist, otherwise empty (filled later by pip)
-if HAS_BUILD_DEPS:
-    extensions = [
-        Extension(
-            "quantsvcj._quant_svcj",
-            sources=["quantsvcj/_quant_svcj.pyx", "quantsvcj/svcj.c"],
-            include_dirs=[numpy.get_include(), "quantsvcj"],
-            extra_compile_args=["-O3", "-fopenmp"],
-            extra_link_args=["-fopenmp"],
-        )
-    ]
-    ext_modules = cythonize(extensions)
-else:
-    ext_modules = []
+# Define the Extension
+# Note: Sources are all in the root directory
+ext_modules = [
+    Extension(
+        "_quant_svcj", # Name of the compiled module
+        sources=["_quant_svcj.pyx", "svcj.c"],
+        include_dirs=["."], # Look in root for .h files
+        extra_compile_args=["-O3", "-fopenmp"] if sys.platform != "win32" else ["/O2", "/openmp"],
+        extra_link_args=["-fopenmp"] if sys.platform != "win32" else [],
+    )
+]
 
 setup(
     name="QuantSVCJ",
     version="5.0.0",
-    description="High-performance SVCJ Factor Engine",
-    packages=find_packages(),
-    # Critical for building without pyproject.toml:
-    setup_requires=["numpy", "cython"], 
-    install_requires=[
-        "numpy", 
-        "pandas", 
-        "cython"
-    ],
+    description="Flat-structure SVCJ Factor Engine",
+    py_modules=["quantsvcj"], # This includes quantsvcj.py
     ext_modules=ext_modules,
-    include_package_data=True,
+    cmdclass={'build_ext': CustomBuildExt},
+    setup_requires=["numpy", "cython"],
+    install_requires=["numpy", "pandas", "cython"],
     zip_safe=False,
 )

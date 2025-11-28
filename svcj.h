@@ -18,6 +18,7 @@ typedef struct {
     double error;
 } SVCJResult;
 
+// Core Optimizer
 SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                          double* strikes, double* prices, double* T_exp, int n_opts,
                          double S0, double r, int mode);

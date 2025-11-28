@@ -1,5 +1,5 @@
-# distutils: sources = quantsvcj/svcj.c
-# distutils: include_dirs = quantsvcj
+# distutils: sources = svcj.c
+# distutils: include_dirs = .
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 
 import numpy as np
@@ -32,9 +32,7 @@ def c_joint_fit(double[:] returns, double[:] strikes, double[:] prices, double[:
     cdef SVCJResult res
     
     with nogil:
-        res = optimize_svcj(&returns[0], nr, 1.0/252.0, 
-                            &strikes[0], &prices[0], &T[0], no, 
-                            S0, r, 1) # Mode 1: Joint
+        res = optimize_svcj(&returns[0], nr, 1.0/252.0, &strikes[0], &prices[0], &T[0], no, S0, r, 1)
                             
     return {
         "kappa": res.p.kappa, "theta": res.p.theta, "sigma_v": res.p.sigma_v, 
@@ -46,37 +44,27 @@ def c_rolling_fit(double[:] returns, int window):
     cdef int T = returns.shape[0]
     cdef int n_out = T - window + 1
     if n_out < 1: return np.zeros((0, 9))
-    
     cdef double[:, ::1] out = np.zeros((n_out, 9), dtype=np.float64)
     cdef int i
     cdef SVCJResult res
-    cdef double dt = 1.0/252.0
     
     for i in prange(n_out, nogil=True):
-        res = optimize_svcj(&returns[i], window, dt, 
-                            NULL, NULL, NULL, 0, 
-                            0, 0, 0) # Mode 0
-        
-        out[i, 0] = res.p.kappa; out[i, 1] = res.p.theta; out[i, 2] = res.p.sigma_v;
-        out[i, 3] = res.p.rho;   out[i, 4] = res.p.lambda; out[i, 5] = res.p.mu_j;
-        out[i, 6] = res.p.sigma_j; out[i, 7] = res.spot_vol; out[i, 8] = res.jump_prob;
-        
+        res = optimize_svcj(&returns[i], window, 1.0/252.0, NULL, NULL, NULL, 0, 0, 0, 0)
+        out[i,0]=res.p.kappa; out[i,1]=res.p.theta; out[i,2]=res.p.sigma_v;
+        out[i,3]=res.p.rho; out[i,4]=res.p.lambda; out[i,5]=res.p.mu_j;
+        out[i,6]=res.p.sigma_j; out[i,7]=res.spot_vol; out[i,8]=res.jump_prob;
     return np.asarray(out)
 
-def c_market_screen(double[:, ::1] returns_matrix):
-    cdef int n_assets = returns_matrix.shape[0]
-    cdef int n_obs = returns_matrix.shape[1]
-    cdef double[:, ::1] out = np.zeros((n_assets, 9), dtype=np.float64)
+def c_market_screen(double[:, ::1] matrix):
+    cdef int n_a = matrix.shape[0]
+    cdef int n_t = matrix.shape[1]
+    cdef double[:, ::1] out = np.zeros((n_a, 9), dtype=np.float64)
     cdef int i
     cdef SVCJResult res
     
-    for i in prange(n_assets, nogil=True):
-        res = optimize_svcj(&returns_matrix[i, 0], n_obs, 1.0/252.0,
-                            NULL, NULL, NULL, 0,
-                            0, 0, 0) # Mode 0
-        
-        out[i, 0] = res.p.kappa; out[i, 1] = res.p.theta; out[i, 2] = res.p.sigma_v;
-        out[i, 3] = res.p.rho;   out[i, 4] = res.p.lambda; out[i, 5] = res.p.mu_j;
-        out[i, 6] = res.p.sigma_j; out[i, 7] = res.spot_vol; out[i, 8] = res.jump_prob;
-        
+    for i in prange(n_a, nogil=True):
+        res = optimize_svcj(&matrix[i, 0], n_t, 1.0/252.0, NULL, NULL, NULL, 0, 0, 0, 0)
+        out[i,0]=res.p.kappa; out[i,1]=res.p.theta; out[i,2]=res.p.sigma_v;
+        out[i,3]=res.p.rho; out[i,4]=res.p.lambda; out[i,5]=res.p.mu_j;
+        out[i,6]=res.p.sigma_j; out[i,7]=res.spot_vol; out[i,8]=res.jump_prob;
     return np.asarray(out)
