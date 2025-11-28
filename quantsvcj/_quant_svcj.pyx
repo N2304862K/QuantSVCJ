@@ -1,5 +1,5 @@
-# distutils: sources = svcj.c
-# distutils: include_dirs = .
+# distutils: sources = quantsvcj/svcj.c
+# distutils: include_dirs = quantsvcj
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 
 import numpy as np
@@ -52,11 +52,10 @@ def c_rolling_fit(double[:] returns, int window):
     cdef SVCJResult res
     cdef double dt = 1.0/252.0
     
-    # Parallel Rolling
     for i in prange(n_out, nogil=True):
         res = optimize_svcj(&returns[i], window, dt, 
                             NULL, NULL, NULL, 0, 
-                            0, 0, 0) # Mode 0: History
+                            0, 0, 0) # Mode 0
         
         out[i, 0] = res.p.kappa; out[i, 1] = res.p.theta; out[i, 2] = res.p.sigma_v;
         out[i, 3] = res.p.rho;   out[i, 4] = res.p.lambda; out[i, 5] = res.p.mu_j;
@@ -71,11 +70,10 @@ def c_market_screen(double[:, ::1] returns_matrix):
     cdef int i
     cdef SVCJResult res
     
-    # Parallel Screen
     for i in prange(n_assets, nogil=True):
         res = optimize_svcj(&returns_matrix[i, 0], n_obs, 1.0/252.0,
                             NULL, NULL, NULL, 0,
-                            0, 0, 0)
+                            0, 0, 0) # Mode 0
         
         out[i, 0] = res.p.kappa; out[i, 1] = res.p.theta; out[i, 2] = res.p.sigma_v;
         out[i, 3] = res.p.rho;   out[i, 4] = res.p.lambda; out[i, 5] = res.p.mu_j;
