@@ -24,7 +24,7 @@ double complex svcj_cf(double complex u, double T, double r, double S0, double V
     return cexp(I * u * (log(S0) + r * T) + A + B * V0 + jump_part + jump_drift);
 }
 
-// Option Pricing (Damped COS/FFT style integration)
+// Option Pricing
 double price_option_core(double S0, double K, double T, double r, double V0, SVCJParams p, int is_call) {
     double alpha = 1.5;
     double k_log = log(K);
@@ -46,12 +46,11 @@ double price_option_core(double S0, double K, double T, double r, double V0, SVC
     
     if (is_call) return (call_price > 0.0) ? call_price : 1e-5;
     
-    // Put-Call Parity
     double put_price = call_price - S0 + K * exp(-r * T);
     return (put_price > 0.0) ? put_price : 1e-5;
 }
 
-// UKF Filter
+// Filter
 double run_filter(double* returns, int n, double dt, SVCJParams p, double* final_state) {
     double v = p.theta; 
     double log_lik = 0.0;
@@ -63,8 +62,8 @@ double run_filter(double* returns, int n, double dt, SVCJParams p, double* final
 
         double mu = (0.0 - 0.5 * v_pred - jump_drift) * dt;
         double innov = returns[t] - mu;
-        
         double var_tot = v_pred * dt + p.lambda * dt * (p.mu_j*p.mu_j + p.sigma_j*p.sigma_j);
+        
         double pdf = (1.0 / sqrt(2.0 * PI * var_tot)) * exp(-0.5 * innov * innov / var_tot);
         log_lik += log((pdf > 1e-12) ? pdf : 1e-12);
         
@@ -75,11 +74,7 @@ double run_filter(double* returns, int n, double dt, SVCJParams p, double* final
         else v = v_pred + p.sigma_v * sqrt(v_pred * dt) * p.rho * (innov / sqrt(var_tot));
         
         if (v < MIN_VOL) v = MIN_VOL;
-        
-        if (t == n-1 && final_state != NULL) {
-            final_state[0] = v;
-            final_state[1] = j_prob;
-        }
+        if (t == n-1 && final_state != NULL) { final_state[0] = v; final_state[1] = j_prob; }
     }
     return -log_lik;
 }
@@ -88,7 +83,6 @@ double run_filter(double* returns, int n, double dt, SVCJParams p, double* final
 SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                          double* strikes, double* prices, double* T_exp, int* types, int n_opts,
                          double S0, double r, int mode) {
-    
     SVCJParams p = {2.0, 0.04, 0.3, -0.5, 0.1, -0.05, 0.1};
     SVCJResult res;
     double best_err = 1e15;
@@ -114,10 +108,8 @@ SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                 case 6: val=&p.sigma_j; break;
             }
             double old = *val;
-            
             for (int dir = -1; dir <= 1; dir += 2) {
                 *val = old + dir * steps[i];
-                
                 if (p.theta < 1e-5) p.theta = 1e-5;
                 if (p.sigma_v < 1e-3) p.sigma_v = 1e-3;
                 if (p.rho < -0.99) p.rho = -0.99; if (p.rho > 0.99) p.rho = 0.99;
@@ -126,7 +118,6 @@ SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
 
                 double err = 0;
                 if (n_ret > 0) err += run_filter(returns, n_ret, dt, p, NULL);
-                
                 if (mode == 1 && n_opts > 0) {
                     double sse = 0;
                     for(int o=0; o<n_opts; o++) {
@@ -135,19 +126,15 @@ SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                     }
                     err += sse * 3000.0;
                 }
-                
                 if (2*p.kappa*p.theta < p.sigma_v*p.sigma_v) err += 1000.0;
-                
                 if (err < best_err) { best_err = err; improved = 1; }
                 else *val = old;
             }
         }
         if (!improved) for(int j=0; j<7; j++) steps[j] *= 0.6;
     }
-    
     double fst[2] = {p.theta, 0};
     if (n_ret > 0) run_filter(returns, n_ret, dt, p, fst);
-    
     res.p = p; res.spot_vol = fst[0]; res.jump_prob = fst[1]; res.error = best_err;
     return res;
 }

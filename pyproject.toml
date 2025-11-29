@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "QuantSVCJ"
-version = "6.0.1"
-description = "High-performance SVCJ Factor Engine"
+version = "6.0.2"
+description = "High-performance SVCJ Engine"
 requires-python = ">=3.8"
 dependencies = [
     "numpy>=1.21.0",

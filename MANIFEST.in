@@ -2,4 +2,3 @@ include svcj.c
 include svcj.h
 include _quant_svcj.pyx
 include requirements.txt
-include README.md

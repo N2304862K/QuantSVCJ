@@ -10,10 +10,8 @@ cdef extern from "svcj.h":
     typedef struct SVCJParams:
         double kappa; double theta; double sigma_v; double rho;
         double lambda; double mu_j; double sigma_j;
-    
     typedef struct SVCJResult:
         SVCJParams p; double spot_vol; double jump_prob; double error;
-
     SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                              double* strikes, double* prices, double* T_exp, int* types, int n_opts,
                              double S0, double r, int mode) nogil
@@ -35,9 +33,8 @@ def c_rolling_single(double[:] returns, int window):
     cdef SVCJResult res
     for i in prange(n_out, nogil=True):
         res = optimize_svcj(&returns[i], window, 1.0/252.0, NULL, NULL, NULL, NULL, 0, 0, 0, 0)
-        out[i,0]=res.p.kappa; out[i,1]=res.p.theta; out[i,2]=res.p.sigma_v;
-        out[i,3]=res.p.rho; out[i,4]=res.p.lambda; out[i,5]=res.p.mu_j;
-        out[i,6]=res.p.sigma_j; out[i,7]=res.spot_vol; out[i,8]=res.jump_prob;
+        out[i,0]=res.p.kappa; out[i,1]=res.p.theta; out[i,2]=res.p.sigma_v; out[i,3]=res.p.rho;
+        out[i,4]=res.p.lambda; out[i,5]=res.p.mu_j; out[i,6]=res.p.sigma_j; out[i,7]=res.spot_vol; out[i,8]=res.jump_prob;
     return np.asarray(out)
 
 def c_screen(double[:, ::1] matrix):
@@ -48,9 +45,8 @@ def c_screen(double[:, ::1] matrix):
     cdef SVCJResult res
     for i in prange(n_a, nogil=True):
         res = optimize_svcj(&matrix[i, 0], n_t, 1.0/252.0, NULL, NULL, NULL, NULL, 0, 0, 0, 0)
-        out[i,0]=res.p.kappa; out[i,1]=res.p.theta; out[i,2]=res.p.sigma_v;
-        out[i,3]=res.p.rho; out[i,4]=res.p.lambda; out[i,5]=res.p.mu_j;
-        out[i,6]=res.p.sigma_j; out[i,7]=res.spot_vol; out[i,8]=res.jump_prob;
+        out[i,0]=res.p.kappa; out[i,1]=res.p.theta; out[i,2]=res.p.sigma_v; out[i,3]=res.p.rho;
+        out[i,4]=res.p.lambda; out[i,5]=res.p.mu_j; out[i,6]=res.p.sigma_j; out[i,7]=res.spot_vol; out[i,8]=res.jump_prob;
     return np.asarray(out)
 
 def c_rolling_multi(double[:, ::1] matrix, int window):
@@ -64,7 +60,6 @@ def c_rolling_multi(double[:, ::1] matrix, int window):
     for a in prange(n_a, nogil=True):
         for w in range(n_w):
             res = optimize_svcj(&matrix[a, w], window, 1.0/252.0, NULL, NULL, NULL, NULL, 0, 0, 0, 0)
-            out[a,w,0]=res.p.kappa; out[a,w,1]=res.p.theta; out[a,w,2]=res.p.sigma_v;
-            out[a,w,3]=res.p.rho; out[a,w,4]=res.p.lambda; out[a,w,5]=res.p.mu_j;
-            out[a,w,6]=res.p.sigma_j; out[a,w,7]=res.spot_vol; out[a,w,8]=res.jump_prob;
+            out[a,w,0]=res.p.kappa; out[a,w,1]=res.p.theta; out[a,w,2]=res.p.sigma_v; out[a,w,3]=res.p.rho;
+            out[a,w,4]=res.p.lambda; out[a,w,5]=res.p.mu_j; out[a,w,6]=res.p.sigma_j; out[a,w,7]=res.spot_vol; out[a,w,8]=res.jump_prob;
     return np.asarray(out)
