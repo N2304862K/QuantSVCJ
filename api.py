@@ -1,49 +1,66 @@
 import numpy as np
 import pandas as pd
-from ._quant_svcj import c_joint_fit, c_rolling_fit, c_market_screen, c_multi_rolling
+from ._quant_svcj import c_joint_fit, c_rolling_fit, c_market_screen
 
 COL_NAMES = ["kappa", "theta", "sigma_v", "rho", "lambda", "mu_j", "sigma_j", "spot_vol", "jump_prob"]
 
 class QuantSVCJ:
     @staticmethod
     def _to_log_returns(prices):
-        """Internal helper."""
-        if isinstance(prices, (pd.Series, pd.DataFrame)):
-            # Heuristic: if values > 5, assume prices. If < 0.5, assume returns.
-            if prices.iloc[0:10].abs().max() > 1.0:
+        """Internal: Safe conversion to log returns."""
+        if isinstance(prices, pd.Series) or isinstance(prices, pd.DataFrame):
+            # Check if already returns (small values ~0)
+            if prices.iloc[0:5].abs().max() < 0.5: 
+                # Likely returns, pass through
+                return prices
+            else:
+                # Likely prices, compute log returns
                 return np.log(prices / prices.shift(1)).dropna()
-            return prices # Already returns
         return prices
 
-    # --- Method 1: Snapshot ---
     @staticmethod
     def analyze_snapshot(price_history, option_chain, risk_free_rate=0.04):
         """
-        Single Asset Joint Fit.
-        option_chain must have: 'strike', 'price', 'T', 'type' ('call'/'put').
+        Snapshot Analysis (History + Option Joint Fit).
+        
+        Args:
+            price_history (pd.Series): Historical Close prices (or log returns).
+            option_chain (pd.DataFrame): Columns ['strike', 'price', 'T'].
+            risk_free_rate (float): Annualized rate.
         """
+        # 1. Handle Price History -> S0 and Returns
         if isinstance(price_history, pd.Series):
-             S0 = price_history.iloc[-1]
-             rets = QuantSVCJ._to_log_returns(price_history)
-             ret_arr = np.ascontiguousarray(rets.values, dtype=np.float64)
-        else: raise ValueError("price_history must be Series")
+            S0 = price_history.iloc[-1] # Optimal S0: Last traded price
+            # If user passed returns, S0 will be small, which is wrong. 
+            # We assume user passes Prices as requested.
+            # If values < 1.0, user might have passed returns. 
+            # In that case, we need to infer S0 from options (less accurate).
+            if S0 < 2.0 and option_chain['strike'].mean() > 10.0:
+                 # User passed returns, infer S0 from ATM strike
+                 S0 = option_chain['strike'].mean()
+            
+            rets = QuantSVCJ._to_log_returns(price_history)
+            ret_arr = np.ascontiguousarray(rets.values, dtype=np.float64)
+        else:
+            raise ValueError("price_history must be a Pandas Series")
 
-        # Process Options
-        df = option_chain.copy()
-        # Map type to int: Call=1, Put=0
-        if 'type' not in df.columns: df['type'] = 'call' # Default
-        type_flag = df['type'].astype(str).str.lower().apply(lambda x: 1 if 'c' in x else 0).values.astype(np.int32)
+        # 2. Handle Options
+        ks = option_chain['strike'].values.astype(np.float64)
+        ps = option_chain['price'].values.astype(np.float64)
+        ts = option_chain['T'].values.astype(np.float64)
         
-        ks = df['strike'].values.astype(np.float64)
-        ps = df['price'].values.astype(np.float64)
-        ts = df['T'].values.astype(np.float64)
-        
-        res = c_joint_fit(ret_arr, ks, ps, ts, type_flag, float(S0), float(risk_free_rate))
+        # 3. Execute
+        res = c_joint_fit(ret_arr, ks, ps, ts, float(S0), float(risk_free_rate))
         return pd.Series(res, name="SVCJ_Snapshot")
 
-    # --- Method 2: Single Rolling ---
     @staticmethod
     def analyze_rolling(price_history, window=252):
+        """
+        Rolling Analysis.
+        Args:
+            price_history (pd.Series): Historical Prices.
+            window (int): Lookback period.
+        """
         rets = QuantSVCJ._to_log_returns(price_history)
         dates = rets.index[window-1:]
         ret_arr = np.ascontiguousarray(rets.values, dtype=np.float64)
@@ -51,36 +68,19 @@ class QuantSVCJ:
         raw = c_rolling_fit(ret_arr, window)
         return pd.DataFrame(raw, index=dates, columns=COL_NAMES)
 
-    # --- Method 3: Market Screen (Static) ---
     @staticmethod
     def analyze_market_screen(price_matrix):
+        """
+        Multi-Asset Screen.
+        Args:
+            price_matrix (pd.DataFrame): Cols=Assets, Index=Date. Prices.
+        """
+        # Calculate Returns
         rets = np.log(price_matrix / price_matrix.shift(1)).dropna()
         assets = rets.columns
+        
+        # Transpose for C (N_assets, T_time)
         mat = np.ascontiguousarray(rets.T.values, dtype=np.float64)
         
         raw = c_market_screen(mat)
         return pd.DataFrame(raw, index=assets, columns=COL_NAMES)
-
-    # --- Method 4: Multi-Asset Rolling ---
-    @staticmethod
-    def analyze_multi_rolling(price_matrix, window=252):
-        """
-        Output: DataFrame. Index=Date. Columns= Asset-Param (Flattened).
-        """
-        rets = np.log(price_matrix / price_matrix.shift(1)).dropna()
-        dates = rets.index[window-1:]
-        assets = rets.columns
-        
-        # C expects (Assets, Time)
-        mat = np.ascontiguousarray(rets.T.values, dtype=np.float64)
-        
-        # Raw: [Windows, Assets*9]
-        raw = c_multi_rolling(mat, window)
-        
-        # Construct Column Names: [AAPL-kappa, AAPL-theta, ..., MSFT-kappa...]
-        flat_cols = []
-        for a in assets:
-            for c in COL_NAMES:
-                flat_cols.append(f"{a}-{c}")
-                
-        return pd.DataFrame(raw, index=dates, columns=flat_cols)

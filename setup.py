@@ -12,7 +12,7 @@ ext = Extension(
 
 setup(
     name="QuantSVCJ",
-    version="5.0",
+    version="4.0.0",
     packages=["quantsvcj"],
     ext_modules=cythonize([ext]),
     install_requires=["numpy", "pandas", "cython"],
