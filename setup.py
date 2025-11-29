@@ -1,18 +1,16 @@
-import os
 import sys
+import os
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
-# --- Custom Builder to Handle Numpy Dependency ---
+# Custom builder to delay numpy import until pip has installed it
 class BuildExt(build_ext):
-    def finalize_options(self):
-        super().finalize_options()
-        # Prevent numpy from being imported before it is installed
-        __builtins__.__NUMPY_SETUP__ = False
+    def run(self):
         import numpy
         self.include_dirs.append(numpy.get_include())
+        super().run()
 
-# --- Extension Definition ---
+# Define the Extension
 ext_modules = [
     Extension(
         "_svcj_impl",
@@ -23,20 +21,21 @@ ext_modules = [
     )
 ]
 
+# Cythonize if available, else rely on pre-generated C (if distributed that way)
 try:
     from Cython.Build import cythonize
     ext_modules = cythonize(ext_modules, compiler_directives={'language_level': "3"})
 except ImportError:
-    pass # Fallback if Cython not yet installed, setup_requires will handle it
+    pass
 
 setup(
     name="quantsvcj",
     version="1.0.0",
-    description="QuantSVCJ Factor Engine",
-    py_modules=["quantsvcj"], # This exposes the python file in root
+    description="QuantSVCJ: High-Performance Factor Engine",
+    py_modules=["quantsvcj"],
     cmdclass={'build_ext': BuildExt},
     ext_modules=ext_modules,
-    setup_requires=["numpy", "cython"],
-    install_requires=["numpy", "pandas", "cython"],
+    setup_requires=["numpy>=1.20.0", "cython>=0.29.0", "setuptools>=40.0.0"],
+    install_requires=["numpy>=1.20.0", "pandas>=1.3.0", "cython>=0.29.0"],
     zip_safe=False,
 )
