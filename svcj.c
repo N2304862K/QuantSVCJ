@@ -5,34 +5,31 @@
 #include "svcj.h"
 
 #define PI 3.14159265358979323846
-#define MAX_ITER 60
 #define MIN_VOL 1e-6
 
-// --- 1. Characteristic Function (Heston + Merton Jump) ---
+// --- 1. Characteristic Function ---
 double complex svcj_cf(double complex u, double T, double r, double S0, double V0, SVCJParams p) {
     double complex xi = p.kappa - p.sigma_v * p.rho * u * I;
     double complex d = csqrt(xi * xi + p.sigma_v * p.sigma_v * (u * u + u * I));
     double complex g = (xi - d) / (xi + d);
     
-    // Heston
     double complex A = (p.kappa * p.theta / (p.sigma_v * p.sigma_v)) * 
                        ((xi - d) * T - 2.0 * clog((1.0 - g * cexp(-d * T)) / (1.0 - g)));
     double complex B = ((xi - d) / (p.sigma_v * p.sigma_v)) * 
                        ((1.0 - cexp(-d * T)) / (1.0 - g * cexp(-d * T)));
     
-    // Jump (Merton) with Drift Correction
     double complex jump_drift = -p.lambda * (exp(p.mu_j + 0.5 * p.sigma_j * p.sigma_j) - 1.0) * I * u * T;
     double complex jump_part = p.lambda * T * (cexp(I * u * p.mu_j - 0.5 * p.sigma_j * p.sigma_j * u * u) - 1.0);
     
     return cexp(I * u * (log(S0) + r * T) + A + B * V0 + jump_part + jump_drift);
 }
 
-// --- 2. Option Pricing (Trapezoidal Fourier Integration) ---
+// --- 2. Fourier Pricing ---
 double price_option(double S0, double K, double T, double r, double V0, SVCJParams p) {
-    double alpha = 1.25; // Damping
+    double alpha = 1.25;
     double k_log = log(K);
     double limit = 200.0;
-    int N = 128; // Efficient power of 2
+    int N = 128;
     double eta = limit / N;
     double complex sum = 0.0 + 0.0 * I;
     
@@ -50,63 +47,45 @@ double price_option(double S0, double K, double T, double r, double V0, SVCJPara
     return (price > 0.0) ? price : 1e-8;
 }
 
-// --- 3. Robust State Filter (UKF-style with Edge Stabilization) ---
+// --- 3. UKF Filter ---
 double run_filter(double* returns, int n, double dt, SVCJParams p, double* out_vol, double* out_jump) {
     double v = p.theta;
     double log_lik = 0.0;
     double jump_drift = p.lambda * (exp(p.mu_j + 0.5 * p.sigma_j * p.sigma_j) - 1.0);
-    
-    // Smoothing buffer for edge stability
     double v_smooth = v; 
     double j_prob = 0.0;
 
     for (int t = 0; t < n; t++) {
-        // A. Prediction
         double v_pred = v + p.kappa * (p.theta - v) * dt;
         if (v_pred < MIN_VOL) v_pred = MIN_VOL;
         
-        // B. Innovation
-        // Expected return considering Jump Drift compensator
         double mu = (0.0 - 0.5 * v_pred - jump_drift) * dt;
         double error = returns[t] - mu;
         
-        // Total Variance Expectation
         double var_diff = v_pred * dt;
         double var_jump = p.lambda * dt * (p.mu_j * p.mu_j + p.sigma_j * p.sigma_j);
         double var_tot = var_diff + var_jump;
         
-        // C. Likelihood
         double pdf = (1.0 / sqrt(2.0 * PI * var_tot)) * exp(-0.5 * (error * error) / var_tot);
         log_lik += log((pdf > 1e-12) ? pdf : 1e-12);
         
-        // D. Update (Robust)
         double sigma_diff = sqrt(var_diff);
-        // Z-score relative to DIFFUSIVE volatility only. 
-        // If high, it's a jump, so we do NOT update Volatility (preventing edge spikes).
         double z = fabs(error) / (sigma_diff + 1e-9);
         
         j_prob = 0.0;
-        if (z > 3.0) j_prob = 1.0; 
-        else if (z > 2.0) j_prob = z - 2.0;
+        if (z > 3.0) j_prob = 1.0; else if (z > 2.0) j_prob = z - 2.0;
 
         if (j_prob > 0.6) {
-            // JUMP: Volatility reverts to mean, ignore shock
             v = v_pred;
         } else {
-            // DIFFUSION: Update via correlation
             double z_norm = error / sqrt(var_tot);
             v = v_pred + p.sigma_v * sqrt(v_pred * dt) * p.rho * z_norm;
         }
-
         if (v < MIN_VOL) v = MIN_VOL;
-        
-        // Exponential smoothing for output stability
-        v_smooth = 0.7 * v_smooth + 0.3 * v;
+        v_smooth = 0.8 * v_smooth + 0.2 * v;
     }
-
     if (out_vol) *out_vol = v_smooth;
     if (out_jump) *out_jump = j_prob;
-
     return -log_lik;
 }
 
@@ -114,24 +93,18 @@ double run_filter(double* returns, int n, double dt, SVCJParams p, double* out_v
 SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                          double* strikes, double* prices, double* T_exp, int n_opts,
                          double S0, double r, int mode) {
-    
-    SVCJParams p = {2.5, 0.04, 0.3, -0.6, 0.2, -0.05, 0.1}; // Initial Guess
-    
-    // Quick heuristic init for theta
+    SVCJParams p = {2.0, 0.04, 0.3, -0.6, 0.1, -0.05, 0.1}; 
     if (n_ret > 20) {
         double acc = 0;
         for(int i=0; i<n_ret; i++) acc += returns[i]*returns[i];
         p.theta = acc / (n_ret * dt);
         if(p.theta > 1.0) p.theta = 0.04;
     }
-
     SVCJResult res;
     SVCJParams best_p = p;
     double best_err = 1e15;
-    
-    // Adaptive Steps
     double steps[] = {0.5, 0.01, 0.1, 0.1, 0.1, 0.02, 0.02};
-    int max_iter = (mode == 1) ? 50 : 40;
+    int max_iter = (mode == 1) ? 50 : 30;
 
     for (int k = 0; k < max_iter; k++) {
         int improved = 0;
@@ -144,54 +117,30 @@ SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                 case 6: val=&p.sigma_j; break;
             }
             double old = *val;
-            
             for (int dir = -1; dir <= 1; dir += 2) {
                 *val = old + dir * steps[i];
-                
-                // Constraints
-                if (p.theta < 1e-4) p.theta = 1e-4;
-                if (p.sigma_v < 1e-3) p.sigma_v = 1e-3;
+                if (p.theta < 1e-4) p.theta = 1e-4; if (p.sigma_v < 1e-3) p.sigma_v = 1e-3;
                 if (p.rho < -0.99) p.rho = -0.99; if (p.rho > 0.99) p.rho = 0.99;
-                if (p.lambda < 0) p.lambda = 0;
-                if (p.sigma_j < 1e-3) p.sigma_j = 1e-3;
+                if (p.lambda < 0) p.lambda = 0; if (p.sigma_j < 1e-3) p.sigma_j = 1e-3;
 
                 double err = 0;
-                
-                // 1. History NLL
                 if (n_ret > 0) err += run_filter(returns, n_ret, dt, p, NULL, NULL);
-                
-                // 2. Options SSE
                 if (mode == 1 && n_opts > 0) {
                     double sse = 0;
                     for(int o=0; o<n_opts; o++) {
                         double mdl = price_option(S0, strikes[o], T_exp[o], r, p.theta, p);
                         sse += pow(mdl - prices[o], 2);
                     }
-                    err += sse * 2500.0; // Weighting Options
+                    err += sse * 2000.0;
                 }
-                
-                // 3. Feller Penalty (Soft)
-                if (2*p.kappa*p.theta < p.sigma_v*p.sigma_v) {
-                    err += 1000.0; 
-                }
-
-                if (err < best_err) {
-                    best_err = err;
-                    best_p = p;
-                    improved = 1;
-                } else {
-                    *val = old;
-                }
+                if (2*p.kappa*p.theta < p.sigma_v*p.sigma_v) err += 1000.0;
+                if (err < best_err) { best_err = err; best_p = p; improved = 1; } else { *val = old; }
             }
         }
         if (!improved) for(int j=0; j<7; j++) steps[j] *= 0.6;
     }
-    
-    // Final States
-    res.p = best_p;
-    res.error = best_err;
+    res.p = best_p; res.error = best_err;
     if (n_ret > 0) run_filter(returns, n_ret, dt, best_p, &res.spot_vol, &res.jump_prob);
     else { res.spot_vol = best_p.theta; res.jump_prob = 0.0; }
-    
     return res;
 }
