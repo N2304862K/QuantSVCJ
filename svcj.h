@@ -18,7 +18,10 @@ typedef struct {
     double error;
 } SVCJResult;
 
-// Added: types array (1=Call, 0=Put)
+/**
+ * Main Optimizer.
+ * types: Array of integers (1 = Call, 0 = Put)
+ */
 SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                          double* strikes, double* prices, double* T_exp, int* types, int n_opts,
                          double S0, double r, int mode);
