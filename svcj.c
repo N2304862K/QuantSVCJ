@@ -8,7 +8,7 @@
 #define MIN_VOL 1e-6
 #define MAX_VOL 5.0
 
-// --- Characteristic Function ---
+// --- Characteristic Function (No change, standard Heston+Merton) ---
 double complex svcj_cf(double complex u, double T, double r, double S0, double V0, SVCJParams p) {
     double complex xi = p.kappa - p.sigma_v * p.rho * u * I;
     double complex d = csqrt(xi * xi + p.sigma_v * p.sigma_v * (u * u + u * I));
@@ -19,19 +19,19 @@ double complex svcj_cf(double complex u, double T, double r, double S0, double V
     double complex B = ((xi - d) / (p.sigma_v * p.sigma_v)) * 
                        ((1.0 - cexp(-d * T)) / (1.0 - g * cexp(-d * T)));
     
-    // Jump Drift Correction
     double complex jump_drift = -p.lambda * (exp(p.mu_j + 0.5 * p.sigma_j * p.sigma_j) - 1.0) * I * u * T;
     double complex jump_part = p.lambda * T * (cexp(I * u * p.mu_j - 0.5 * p.sigma_j * p.sigma_j * u * u) - 1.0);
     
     return cexp(I * u * (log(S0) + r * T) + A + B * V0 + jump_part + jump_drift);
 }
 
-// --- Fourier Pricing ---
-double price_option(double S0, double K, double T, double r, double V0, SVCJParams p) {
+// --- Fourier Pricing with Type Handling ---
+double price_option_exact(double S0, double K, double T, double r, double V0, int is_call, SVCJParams p) {
+    // 1. Calculate Call Price using Carr-Madan
     double alpha = 1.5;
     double k_log = log(K);
     double limit = 200.0;
-    int N = 100; // Speed optimization
+    int N = 100; // Efficient grid
     double eta = limit / N;
     double complex sum = 0.0 + 0.0 * I;
     
@@ -44,12 +44,20 @@ double price_option(double S0, double K, double T, double r, double V0, SVCJPara
         sum += weight * cexp(-I * v * k_log) * num / denom;
     }
     
-    double price = (exp(-alpha * k_log) / PI) * creal(sum * eta);
-    price *= exp(-r*T); 
-    return (price > 0.0) ? price : 1e-8;
+    double call_price = (exp(-alpha * k_log) / PI) * creal(sum * eta);
+    call_price *= exp(-r*T);
+    
+    // 2. Return Call or Put
+    if (is_call == 1) {
+        return (call_price > 0.0) ? call_price : 1e-8;
+    } else {
+        // Put-Call Parity: P = C - S + K*e^(-rT)
+        double put_price = call_price - S0 + K * exp(-r * T);
+        return (put_price > 0.0) ? put_price : 1e-8;
+    }
 }
 
-// --- UKF Filter ---
+// --- UKF Filter (Unchanged) ---
 double run_filter(double* returns, int n, double dt, SVCJParams p, double* final_state) {
     double v = p.theta; 
     double log_lik = 0.0;
@@ -67,16 +75,12 @@ double run_filter(double* returns, int n, double dt, SVCJParams p, double* final
         double pdf = (1.0 / sqrt(2.0 * PI * var_tot)) * exp(-0.5 * (innovation * innovation) / var_tot);
         log_lik += log((pdf > 1e-15) ? pdf : 1e-15);
 
-        // State Update
         double z_score = fabs(innovation) / (sqrt(v_pred * dt) + 1e-9);
         double jump_prob = (z_score > 3.0) ? 1.0 : 0.0;
         
-        if (jump_prob > 0.5) {
-             v = v_pred; 
-        } else {
-             double z_innov = innovation / sqrt(var_tot);
-             v = v_pred + p.sigma_v * sqrt(v_pred * dt) * p.rho * z_innov;
-        }
+        if (jump_prob > 0.5) v = v_pred; 
+        else v = v_pred + p.sigma_v * sqrt(v_pred * dt) * p.rho * (innovation / sqrt(var_tot));
+        
         if (v < MIN_VOL) v = MIN_VOL;
         
         if (t == n-1 && final_state != NULL) {
@@ -89,7 +93,7 @@ double run_filter(double* returns, int n, double dt, SVCJParams p, double* final
 
 // --- Optimizer ---
 SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
-                         double* strikes, double* prices, double* T_exp, int n_opts,
+                         double* strikes, double* prices, double* T_exp, int* types, int n_opts,
                          double S0, double r, int mode) {
     
     SVCJParams p = {2.0, 0.04, 0.3, -0.5, 0.1, -0.05, 0.1};
@@ -97,16 +101,16 @@ SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
     double best_err = 1e15;
     SVCJParams best_p = p;
     
-    // Quick heuristic init
     if (n_ret > 10) {
         double sum = 0;
         for(int i=0; i<n_ret; i++) sum += returns[i]*returns[i];
         p.theta = sum / (n_ret * dt);
-        if (p.theta > 1.0 || p.theta < 0.0) p.theta = 0.04;
+        if (p.theta > 1.0) p.theta = 0.04;
     }
 
+    // Adaptive steps
     double steps[] = {0.5, 0.01, 0.1, 0.1, 0.05, 0.02, 0.02};
-    int max_iter = (mode == 1) ? 40 : 50;
+    int max_iter = (mode == 1) ? 35 : 50; 
 
     for (int k = 0; k < max_iter; k++) {
         int improved = 0;
@@ -132,19 +136,21 @@ SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
                 
                 double err = 0;
                 
+                // History Error
                 if (n_ret > 0) err += run_filter(returns, n_ret, dt, p, NULL);
                 
+                // Full Surface Option Error
                 if (mode == 1 && n_opts > 0) {
                     double sse = 0;
                     for(int o=0; o<n_opts; o++) {
-                        double mdl = price_option(S0, strikes[o], T_exp[o], r, p.theta, p);
-                        sse += pow(mdl - prices[o], 2);
+                        // Pass type (Call/Put) to pricer
+                        double mdl = price_option_exact(S0, strikes[o], T_exp[o], r, p.theta, types[o], p);
+                        double diff = mdl - prices[o];
+                        sse += diff * diff;
                     }
-                    err += sse * 5000.0; 
+                    // Scale SSE to match NLL magnitude
+                    err += sse * 1000.0; 
                 }
-
-                // Feller Penalty
-                if (2*p.kappa*p.theta < p.sigma_v*p.sigma_v) err += 1000.0;
 
                 if (err < best_err) {
                     best_err = err;
