@@ -1,108 +1,182 @@
-# SVCJ Factor Engine (UKF-QMLE & OpenMP Upgrade)
+# SVCJ Factor Engine (UKF-QMLE & OpenMP Enhanced)
 
-This repository contains a high-performance C-Extension engine for the **Stochastic Volatility with Correlated Jumps (SVCJ)** model (specifically the Bates model variant). 
+A high-performance implementation of the Stochastic Volatility with Correlated Jumps (SVCJ/Bates) model. This engine has been upgraded to use **Unscented Kalman Filters (UKF)** for latent state extraction and **OpenMP** for parallel market-wide screening.
 
-It has been upgraded to replace heuristic estimation with **Unscented Kalman Filter (UKF) QMLE**, utilizing **OpenMP** for parallel market screening and **Fourier Transforms** for option pricing.
+It is designed to extract "Spot Volatility" and "Instantaneous Jump Probabilities" from time-series data while enforcing mathematical stability (Feller conditions).
 
 ## Key Features
 
-1.  **Algorithmic Core:** Uses **UKF-QMLE** (Unscented Kalman Filter Quasi-Maximum Likelihood Estimation) to rigorously separate continuous volatility from discrete jumps.
-2.  **Mathematical Stability:** Enforces the **Feller Condition** ($2\kappa\theta > \sigma_v^2$) and positivity constraints to prevent numerical explosion.
-3.  **Latent State Extraction:** Outputs time-series vectors for **Spot Volatility** ($v_t$) and **Instantaneous Jump Probability** ($P(J_t)$).
-4.  **High-Performance Scaling:** Implements **OpenMP** parallelization in the C-kernel, allowing market-wide screening (500+ assets) in seconds by releasing the Python GIL.
-5.  **Robustness:** Includes internal denoising for 0.00% returns (illiquidity handling).
-6.  **Option Support:** Native **Carr-Madan** pricing for arbitrary chains of Calls and Puts.
-
-## Prerequisites
-
-To build this engine, you must have:
-*   **C Compiler:** `gcc` (Linux/macOS) or MSVC (Windows).
-*   **Python Dev Headers:** Usually included with Python, or `python-dev` on Linux.
-*   **OpenMP Support:** 
-    *   *Linux:* Standard `libgomp` (usually pre-installed).
-    *   *Mac:* `libomp` (install via `brew install libomp`).
-    *   *Windows:* Supported natively by MSVC.
+1.  **Algorithmic Solver (UKF-QMLE):** Replaces heuristic estimation with a rigorous Unscented Kalman Filter to separate continuous volatility from discrete jumps.
+2.  **High-Performance Scaling:** Utilizes OpenMP in the C-kernel to analyze 500+ assets in seconds (bypassing the Python GIL).
+3.  **Latent State Extraction:** Outputs time-series vectors for $v_t$ (Spot Vol) and $P(J_t)$ (Jump Probability) rather than just static parameters.
+4.  **Robustness:** Internal "Zero-Return Denoising" prevents numerical instability on illiquid days or trading halts.
+5.  **Option Pricing:** Built-in Carr-Madan Fourier integration for pricing arbitrary option chains (Calls/Puts).
 
 ## Installation
 
-This package is **not** a standard pip-installable library. It compiles a C extension in place to maximize speed.
+This is a C-extension module. You must compile the engine locally before usage.
 
-1.  **Install Python Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+### Prerequisites
+*   Python 3.8+
+*   C Compiler (GCC on Linux/Mac, MSVC on Windows)
+*   OpenMP libraries (usually included with GCC; on Mac via `brew install libomp`)
 
-2.  **Compile the Engine:**
-    Run the setup script to build the shared object file (`svcj_wrapper.so` or `.pyd`) in the current directory.
-    ```bash
-    python setup.py build_ext --inplace
-    ```
+### 1. Install Dependencies
+```bash
+pip install -r requirements.txt
+pip install yfinance matplotlib  # Additional requirements for the demo
+```
 
-    *Success Check:* Ensure a file named `svcj_wrapper...so` (Linux/Mac) or `svcj_wrapper...pyd` (Windows) appears in your folder.
+### 2. Compile the Engine
+Run the setup script to build the shared object file (`svcj_wrapper.so` or `.pyd`) in place.
+
+```bash
+python setup.py build_ext --inplace
+```
+
+*Note: If you are on macOS and encounter clang errors regarding OpenMP, ensure you have `libomp` installed and your environment variables are set correctly.*
+
+## Project Structure
+
+*   `svcj_wrapper.pyx`: Cython interface bridging Numpy and C. Handles OpenMP parallel loops.
+*   `svcj.c`: The core mathematical kernel (UKF logic, Feller checks, Likelihood calculations).
+*   `svcj.h`: Header definitions for Bates model structures.
+*   `setup.py`: Build configuration with compiler flags for parallelization.
+*   `requirements.txt`: Package dependencies.
 
 ## Usage
 
-Once compiled, you can import `svcj_wrapper` directly in Python.
-
-### 1. High-Performance Market Screening (Parallel)
-Analyze hundreds of assets simultaneously using the OpenMP-enabled `analyze_market_screen`.
+### 1. Market Screening (Parallel)
+The engine accepts a 2D matrix of log returns `(n_assets, time_steps)` and returns latent state matrices.
 
 ```python
+import svcj_wrapper
+import numpy as np
+
+# Load your data (n_assets x time_steps)
+# returns_matrix = ... 
+
+# Run parallel extraction
+spot_vols, jump_probs = svcj_wrapper.analyze_market_screen(returns_matrix)
+```
+
+### 2. Option Pricing
+Price mixed chains of Puts and Calls using the internal characteristic function integration.
+
+```python
+# Strike prices and types (1=Call, 0=Put)
+strikes = np.array([100.0, 105.0, 95.0], dtype=np.float64)
+types = np.array([1, 1, 0], dtype=np.int32) 
+
+# Price chain: S0=100, r=0.05, q=0.02, T=1.0
+prices = svcj_wrapper.price_option_chain(100.0, 0.05, 0.02, 1.0, strikes, types)
+```
+
+## License
+MIT
+```
+
+---
+
+### 2. run.py (Demo Script)
+
+This script demonstrates fetching data from Yahoo Finance, preparing the data structure, and running the compiled C-engine.
+
+```python
+import yfinance as yf
 import numpy as np
 import pandas as pd
-import svcj_wrapper
+import matplotlib.pyplot as plt
+import svcj_wrapper  # This imports the compiled C extension
+import time
 
-# 1. Prepare Data: Matrix of Log Returns (Assets x Time)
-# Shape: (500 Assets, 1000 Time Steps)
-n_assets = 500
-n_days = 1000
-market_returns = np.random.normal(0, 0.01, size=(n_assets, n_days)).astype(np.float64)
+def main():
+    print("--- SVCJ Factor Engine Demo ---")
+    
+    # 1. Configuration
+    tickers = ['SPY', 'QQQ', 'IWM', 'GLD', 'TLT', 'NVDA', 'AAPL']
+    period = "2y"
+    
+    print(f"[1] Downloading data for {len(tickers)} assets from Yahoo Finance...")
+    data = yf.download(tickers, period=period, progress=False)['Adj Close']
+    
+    # 2. Pre-process Data
+    # Calculate Log Returns: ln(Pt / Pt-1)
+    # Fill NaN with 0.0 (The C engine handles 0.0 via internal denoising)
+    log_returns = np.log(data / data.shift(1)).fillna(0.0)
+    
+    # Transpose to shape (N_Assets, Time_Steps) required by the C engine
+    # Ensure C-contiguous memory layout for performance
+    market_matrix = np.ascontiguousarray(log_returns.values.T, dtype=np.float64)
+    
+    n_assets, t_steps = market_matrix.shape
+    print(f"[2] Data Prepared: {n_assets} Assets over {t_steps} trading days.")
+    
+    # 3. Run Engine (Parallelized UKF)
+    print(f"[3] Running UKF-QMLE Engine (OpenMP Parallelized)...")
+    start_time = time.time()
+    
+    # --- CORE CALL TO C EXTENSION ---
+    spot_vols, jump_probs = svcj_wrapper.analyze_market_screen(market_matrix)
+    # --------------------------------
+    
+    elapsed = time.time() - start_time
+    print(f"    Completed in {elapsed:.4f} seconds.")
+    print(f"    Processed {n_assets * t_steps} data points.")
 
-# 2. Run Analysis
-# Returns two matrices: Spot Volatility and Jump Probability
-print("Running UKF-QMLE on 500 assets...")
-spot_vols, jump_probs = svcj_wrapper.analyze_market_screen(market_returns)
+    # 4. Visualization of Results
+    print("[4] Visualizing results for NVDA (Example)...")
+    
+    # Find index of NVDA
+    asset_idx = tickers.index('NVDA')
+    
+    dates = log_returns.index
+    asset_ret = market_matrix[asset_idx]
+    asset_vol = spot_vols[asset_idx]
+    asset_jump = jump_probs[asset_idx]
+    
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    
+    # Plot 1: Returns
+    ax1.plot(dates, asset_ret, color='grey', alpha=0.6, label='Log Returns')
+    ax1.set_title(f"NVDA: Market Returns")
+    ax1.legend(loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Extracted Spot Volatility (Latent State)
+    ax2.plot(dates, asset_vol, color='blue', lw=1.5, label='Extracted Spot Vol (UKF)')
+    ax2.set_title("Latent Spot Volatility (Filtered)")
+    ax2.legend(loc='upper left')
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Instantaneous Jump Probability
+    ax3.bar(dates, asset_jump, color='red', width=2, label='Jump Probability P(J_t)')
+    ax3.axhline(0.5, color='black', linestyle='--', alpha=0.5)
+    ax3.set_title("Instantaneous Jump Probability")
+    ax3.set_ylim(0, 1.05)
+    ax3.legend(loc='upper left')
+    ax3.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    print("    Plot generated. Close window to continue.")
+    plt.show()
 
-# 3. Process Results
-# Example: Get the jump probability time series for Asset #0
-asset_0_jumps = jump_probs[0, :]
+    # 5. Option Pricing Demo
+    print("\n[5] Option Pricing Demo (Carr-Madan)")
+    S0 = 100.0
+    strikes = np.array([90.0, 95.0, 100.0, 105.0, 110.0], dtype=np.float64)
+    # 0 = Put, 1 = Call
+    types = np.array([0, 0, 1, 1, 1], dtype=np.int32)
+    
+    print(f"    Pricing chain for S0={S0}...")
+    prices = svcj_wrapper.price_option_chain(S0, 0.05, 0.0, 0.5, strikes, types)
+    
+    df_opts = pd.DataFrame({
+        'Strike': strikes,
+        'Type': ['Put' if t==0 else 'Call' for t in types],
+        'Model_Price': prices
+    })
+    print(df_opts)
 
-print(f"Asset 0 Avg Volatility: {np.mean(spot_vols[0, :]):.4f}")
-print(f"Asset 0 Max Jump Prob:  {np.max(asset_0_jumps):.4f}")
-```
-
-### 2. Option Pricing (Carr-Madan)
-Price mixed chains of Calls and Puts efficiently.
-
-```python
-import numpy as np
-import svcj_wrapper
-
-# Market Params
-S0 = 100.0   # Spot Price
-r = 0.05     # Risk-free rate
-q = 0.0      # Dividend yield
-T = 1.0      # Time to maturity (years)
-
-# Option Chain Definition
-# Strikes: [95, 100, 105]
-# Types:   [0 (Put), 1 (Call), 1 (Call)]
-strikes = np.array([95.0, 100.0, 105.0], dtype=np.float64)
-types = np.array([0, 1, 1], dtype=np.int32) 
-
-# Calculate Prices
-# The engine uses internal Bates model params (calibrated or default)
-prices = svcj_wrapper.price_option_chain(S0, r, q, T, strikes, types)
-
-for K, type_flag, price in zip(strikes, types, prices):
-    opt_type = "Call" if type_flag == 1 else "Put"
-    print(f"{opt_type} Strike {K}: ${price:.4f}")
-```
-
-## File Structure
-
-*   `svcj.c`: Core C logic (UKF, Feller Check, Denoising).
-*   `svcj.h`: Header definitions for structs and prototypes.
-*   `svcj_wrapper.pyx`: Cython interface exposing C logic to Python.
-*   `setup.py`: Build script with OpenMP flags.
-*   `requirements.txt`: Python dependencies.
+if __name__ == "__main__":
+    main()
