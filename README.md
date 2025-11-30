@@ -74,7 +74,7 @@ prices = svcj_wrapper.price_option_chain(100.0, 0.05, 0.02, 1.0, strikes, types)
 
 ## License
 MIT
-```
+
 
 ---
 
