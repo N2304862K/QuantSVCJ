@@ -1,4 +1,3 @@
-# cython: language_level=3
 # cython: boundscheck=False
 # cython: wraparound=False
 # cython: cdivision=True
@@ -8,9 +7,9 @@ cimport numpy as np
 from cython.parallel import prange
 from libc.stdlib cimport malloc, free
 
-# --- C Declarations ---
-cdef extern from "svcj.h":
-    ctypedef struct ModelParams:
+# --- C Interface ---
+cdef extern from "svcj_kernel.h":
+    ctypedef struct SVCJParams:
         double kappa
         double theta
         double sigma_v
@@ -20,83 +19,143 @@ cdef extern from "svcj.h":
         double sigma_j
         double v0
 
-    ctypedef struct FilterOutput:
+    ctypedef struct FilterState:
         double spot_vol
         double jump_prob
-        double log_likelihood
+        double drift_residue
 
-    void run_ukf_qmle(double* log_returns, int T, ModelParams* params, FilterOutput* out_states) nogil
-    double carr_madan_price(double S0, double K, double T, double r, double q, ModelParams* p, int is_call) nogil
+    ctypedef struct OptionContract:
+        double strike
+        double price
+        double T
+        int is_call
 
-# --- Python Wrapper Class ---
+    void optimize_params_history(double* returns, int n_steps, SVCJParams* out_best_params) nogil
+    void run_ukf_filter(double* returns, int n_steps, SVCJParams* params, FilterState* out_states) nogil
+    void calibrate_to_options(OptionContract* options, int n_opts, double spot_price, SVCJParams* out_params) nogil
 
-def analyze_market_screen(np.ndarray[double, ndim=2] market_returns):
+# --- Python Interface ---
+
+# 1. Asset-Specific Option Adjusted Analysis
+def fit_asset_options(np.ndarray[double, ndim=1] log_returns, 
+                      np.ndarray[double, ndim=2] option_chain, 
+                      double spot_price):
     """
-    High-Performance Scaling: Analyzes multiple assets in parallel using OpenMP.
-    market_returns: shape (n_assets, time_steps)
+    Input: Log returns (history), Option Chain [Strike, Price, T, IsCall(0/1)]
+    Output: Dict of Risk Params, Drift, Spot Vol Series, Jump Prob Series
+    """
+    cdef int n_steps = log_returns.shape[0]
+    cdef int n_opts = option_chain.shape[0]
+    cdef SVCJParams params
+    cdef OptionContract* c_opts = <OptionContract*> malloc(n_opts * sizeof(OptionContract))
+    cdef FilterState* states = <FilterState*> malloc(n_steps * sizeof(FilterState))
+    
+    # Pack Options
+    for i in range(n_opts):
+        c_opts[i].strike = option_chain[i, 0]
+        c_opts[i].price = option_chain[i, 1]
+        c_opts[i].T = option_chain[i, 2]
+        c_opts[i].is_call = <int>option_chain[i, 3]
+
+    # 1. Calibrate Risk Neutral Params to Options
+    calibrate_to_options(c_opts, n_opts, spot_price, &params)
+    
+    # 2. Run UKF on history using these params to get Spot Vol / Jump Prob
+    run_ukf_filter(&log_returns[0], n_steps, &params, states)
+
+    # Unpack
+    spot_vols = np.zeros(n_steps)
+    jump_probs = np.zeros(n_steps)
+    
+    for i in range(n_steps):
+        spot_vols[i] = states[i].spot_vol
+        jump_probs[i] = states[i].jump_prob
+
+    free(c_opts)
+    free(states)
+
+    return {
+        "params": {"kappa": params.kappa, "theta": params.theta, "rho": params.rho},
+        "spot_vol": spot_vols,
+        "jump_prob": jump_probs
+    }
+
+# 2. Market Wide Historic Rolling (OpenMP Parallel)
+def generate_historic_rolling(np.ndarray[double, ndim=2] market_returns, int window):
+    """
+    Input: Matrix (Assets x Time), Window Size
+    Output: Matrix (Assets x Time x Params) - Simplified to just Spot Vol for demo
     """
     cdef int n_assets = market_returns.shape[0]
-    cdef int T = market_returns.shape[1]
-    
-    # Output arrays
-    cdef np.ndarray[double, ndim=2] spot_vols = np.zeros((n_assets, T), dtype=np.float64)
-    cdef np.ndarray[double, ndim=2] jump_probs = np.zeros((n_assets, T), dtype=np.float64)
-    
-    # Temporary pointers for OpenMP
-    cdef double[:, :] ret_view = market_returns
-    cdef double[:, :] vol_view = spot_vols
-    cdef double[:, :] jump_view = jump_probs
-    
+    cdef int n_time = market_returns.shape[1]
     cdef int i, t
-    cdef ModelParams p
-    cdef FilterOutput* out_buffer
     
-    # Generic Default Parameters for screening
-    p.kappa = 2.0
-    p.theta = 0.04
-    p.sigma_v = 0.3
-    p.rho = -0.7
-    p.lambda_j = 0.5
-    p.mu_j = -0.05
-    p.sigma_j = 0.1
-    p.v0 = 0.04
-
-    # Parallel Loop (Releases GIL)
+    # Output: Spot Vol Matrix
+    cdef np.ndarray[double, ndim=2] result = np.zeros((n_assets, n_time))
+    
+    cdef SVCJParams p
+    cdef FilterState* states
+    
+    # Release GIL for parallel processing across assets
     with nogil:
-        for i in prange(n_assets, schedule='static'):
-            # Allocate thread-local buffer
-            out_buffer = <FilterOutput*> malloc(T * sizeof(FilterOutput))
+        for i in prange(n_assets, schedule='dynamic'):
+            states = <FilterState*> malloc(n_time * sizeof(FilterState))
             
-            # Copy row to contiguous buffer if needed, or pass pointer directly
-            # Here we assume C-contiguous input, passing address of first element
-            run_ukf_qmle(&ret_view[i, 0], T, &p, out_buffer)
+            # Simple rolling optimization logic would go here
+            # For speed, we fit once on whole history and filter
+            optimize_params_history(&market_returns[i, 0], n_time, &p)
+            run_ukf_filter(&market_returns[i, 0], n_time, &p, states)
             
-            # Unpack results back to views
-            for t in range(T):
-                vol_view[i, t] = out_buffer[t].spot_vol
-                jump_view[i, t] = out_buffer[t].jump_prob
+            for t in range(n_time):
+                result[i, t] = states[t].spot_vol
             
-            free(out_buffer)
+            free(states)
+            
+    return result
 
-    return spot_vols, jump_probs
-
-def price_option_chain(double S0, double r, double q, double T, 
-                       np.ndarray[double, ndim=1] strikes, 
-                       np.ndarray[int, ndim=1] types):
+# 3. Market Wide Current Snapshot (Spot Vol & Jump Prob)
+def generate_current_screen(np.ndarray[double, ndim=2] market_returns):
     """
-    Comprehensive Option Support: Prices mixed Calls (1) and Puts (0) 
-    using Bates/SVCJ logic.
+    Input: Matrix (Assets x History)
+    Output: Matrix (Assets x 2) -> [Latest Spot Vol, Latest Jump Prob]
     """
-    cdef int n = strikes.shape[0]
-    cdef np.ndarray[double, ndim=1] prices = np.zeros(n, dtype=np.float64)
-    cdef ModelParams p
-    
-    # Load calibrated params (Hardcoded for demo, usually passed in)
-    p.kappa = 1.5; p.theta = 0.04; p.sigma_v = 0.4; p.rho = -0.6;
-    p.lambda_j = 0.3; p.mu_j = -0.09; p.sigma_j = 0.15; p.v0 = 0.04;
-
+    cdef int n_assets = market_returns.shape[0]
+    cdef int n_time = market_returns.shape[1]
     cdef int i
-    for i in range(n):
-        prices[i] = carr_madan_price(S0, strikes[i], T, r, q, &p, types[i])
+    cdef np.ndarray[double, ndim=2] output = np.zeros((n_assets, 2))
+    
+    cdef SVCJParams p
+    cdef FilterState* states
+    
+    with nogil:
+        for i in prange(n_assets):
+            states = <FilterState*> malloc(n_time * sizeof(FilterState))
+            optimize_params_history(&market_returns[i, 0], n_time, &p)
+            run_ukf_filter(&market_returns[i, 0], n_time, &p, states)
+            
+            output[i, 0] = states[n_time-1].spot_vol
+            output[i, 1] = states[n_time-1].jump_prob
+            
+            free(states)
+            
+    return output
+
+# 4. Asset-Specific Forward Targeting (Drift Residue)
+def calculate_drift_residue(np.ndarray[double, ndim=1] log_returns):
+    """
+    Input: Log returns
+    Output: Vector of realized residues (Return - Expected Drift)
+    """
+    cdef int n_steps = log_returns.shape[0]
+    cdef SVCJParams p
+    cdef FilterState* states = <FilterState*> malloc(n_steps * sizeof(FilterState))
+    cdef np.ndarray[double, ndim=1] residues = np.zeros(n_steps)
+    
+    optimize_params_history(&log_returns[0], n_steps, &p)
+    run_ukf_filter(&log_returns[0], n_steps, &p, states)
+    
+    for i in range(n_steps):
+        residues[i] = states[i].drift_residue
         
-    return prices
+    free(states)
+    return residues
