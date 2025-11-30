@@ -5,10 +5,10 @@
 import numpy as np
 cimport numpy as np
 from cython.parallel import prange
-from libc.stdlib cimport malloc, free, calloc
+from libc.stdlib cimport malloc, free
 from libc.string cimport memset
 
-# --- C Interface ---
+# --- C Interface Definitions ---
 cdef extern from "svcj_kernel.h":
     ctypedef struct SVCJParams:
         double kappa
@@ -43,27 +43,31 @@ def fit_asset_options(np.ndarray[double, ndim=1] log_returns,
                       double spot_price):
     cdef int n_steps = log_returns.shape[0]
     cdef int n_opts = option_chain.shape[0]
+    
+    # Init Params to prevent garbage values
     cdef SVCJParams params
-    memset(&params, 0, sizeof(SVCJParams)) # Zero init
-
+    memset(&params, 0, sizeof(SVCJParams))
+    
     cdef OptionContract* c_opts = <OptionContract*> malloc(n_opts * sizeof(OptionContract))
     cdef FilterState* states = <FilterState*> malloc(n_steps * sizeof(FilterState))
     
+    # Marshal Option Data
     for i in range(n_opts):
         c_opts[i].strike = option_chain[i, 0]
         c_opts[i].price = option_chain[i, 1]
         c_opts[i].T = option_chain[i, 2]
         c_opts[i].is_call = <int>option_chain[i, 3]
 
-    # 1. First optimize on history to get base dynamics
+    # 1. Historical Fit (Smart Grid)
     optimize_params_history(&log_returns[0], n_steps, &params)
     
-    # 2. Refine theta/v0 using Option Market Data
+    # 2. Option Adjustment (Implied Vol Override)
     calibrate_to_options(c_opts, n_opts, spot_price, &params)
     
-    # 3. Final Filter Run
+    # 3. Filter Run
     run_ukf_filter(&log_returns[0], n_steps, &params, states)
 
+    # Output
     spot_vols = np.zeros(n_steps)
     jump_probs = np.zeros(n_steps)
     
@@ -75,7 +79,7 @@ def fit_asset_options(np.ndarray[double, ndim=1] log_returns,
     free(states)
 
     return {
-        "params": {"kappa": params.kappa, "theta": params.theta, "rho": params.rho, "v0": params.v0},
+        "params": {"kappa": params.kappa, "theta": params.theta, "rho": params.rho, "sigma_v": params.sigma_v},
         "spot_vol": spot_vols,
         "jump_prob": jump_probs
     }
@@ -89,6 +93,7 @@ def generate_current_screen(np.ndarray[double, ndim=2] market_returns):
     cdef SVCJParams p
     cdef FilterState* states
     
+    # Parallelize across assets
     with nogil:
         for i in prange(n_assets):
             memset(&p, 0, sizeof(SVCJParams))
