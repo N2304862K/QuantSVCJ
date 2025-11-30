@@ -8,7 +8,7 @@ if sys.platform.startswith("win"):
     compile_args = ["/openmp", "/O2"]
     link_args = []
 else:
-    compile_args = ["-fopenmp", "-O3"]
+    compile_args = ["-fopenmp", "-O3", "-ffast-math"]
     link_args = ["-fopenmp"]
 
 extensions = [
