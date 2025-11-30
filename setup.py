@@ -1,19 +1,28 @@
+import sys
+import numpy
 from setuptools import setup, Extension
 from Cython.Build import cythonize
-import numpy
 
-ext = Extension(
-    "quantsvcj._quant_svcj",
-    sources=["_quant_svcj.pyx", "svcj.c"],
-    include_dirs=[numpy.get_include(), "."],
-    extra_compile_args=["-O3", "-fopenmp"],
-    extra_link_args=["-fopenmp"]
-)
+# Platform specific OpenMP flags
+if sys.platform.startswith("win"):
+    compile_args = ["/openmp", "/O2"]
+    link_args = []
+else:
+    compile_args = ["-fopenmp", "-O3", "-ffast-math"]
+    link_args = ["-fopenmp"]
+
+extensions = [
+    Extension(
+        name="svcj_wrapper",
+        sources=["svcj_wrapper.pyx", "svcj.c"],
+        include_dirs=[numpy.get_include(), "."],
+        extra_compile_args=compile_args,
+        extra_link_args=link_args,
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")]
+    )
+]
 
 setup(
-    name="QuantSVCJ",
-    version="3.0",
-    packages=["quantsvcj"],
-    ext_modules=cythonize([ext]),
-    install_requires=["numpy", "pandas", "cython"],
+    name="SVCJ_Factor_Engine",
+    ext_modules=cythonize(extensions, compiler_directives={'language_level': "3"}),
 )

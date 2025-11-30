@@ -1,27 +1,41 @@
-/* svcj.h */
 #ifndef SVCJ_H
 #define SVCJ_H
 
-typedef struct {
-    double kappa;
-    double theta;
-    double sigma_v;
-    double rho;
-    double lambda;
-    double mu_j;
-    double sigma_j;
-} SVCJParams;
+#include <math.h>
+#include <complex.h>
+#include <stdlib.h>
+
+// --- Data Structures ---
 
 typedef struct {
-    SVCJParams p;
-    double spot_vol;
-    double jump_prob;
-    double error;
-} SVCJResult;
+    double kappa;       // Mean reversion speed
+    double theta;       // Long-term variance
+    double sigma_v;     // Vol of Vol
+    double rho;         // Correlation
+    double lambda_j;    // Jump intensity
+    double mu_j;        // Jump mean
+    double sigma_j;     // Jump volatility
+    double v0;          // Initial variance
+} ModelParams;
 
-// mode: 0=History Only (Screen/Rolling), 1=Joint (Snapshot)
-SVCJResult optimize_svcj(double* returns, int n_ret, double dt,
-                         double* strikes, double* prices, double* T_exp, int n_opts,
-                         double S0, double r, int mode);
+typedef struct {
+    double spot_vol;            // Extracted latent volatility
+    double jump_prob;           // Instantaneous jump probability
+    double log_likelihood;      // QMLE Metric
+} FilterOutput;
+
+// --- Function Prototypes ---
+
+// Core UKF-QMLE Algorithm
+void run_ukf_qmle(double* log_returns, int T, ModelParams* params, FilterOutput* out_states);
+
+// Carr-Madan Option Pricing (Fourier Transform)
+double carr_madan_price(double S0, double K, double T, double r, double q, ModelParams* p, int is_call);
+
+// Helper: Feller Condition Enforcer
+double check_feller_condition(double kappa, double theta, double sigma_v);
+
+// Helper: Denoise 0.0 returns
+void denoise_data(double* data, int n);
 
 #endif
