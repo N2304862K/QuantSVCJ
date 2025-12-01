@@ -5,29 +5,31 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Parameters in DAILY units for stability
+// All variance parameters are in DAILY (per-step) units.
 typedef struct {
-    double kappa;       // Mean reversion 
-    double theta;       // Long-run variance (Daily units: e.g. 0.00016 for 20% ann vol)
+    double alpha;       // Constant drift component (Daily)
+    double kappa;       // Mean reversion speed
+    double theta;       // Long-run variance (Daily units)
     double sigma_v;     // Vol of vol
     double rho;         // Correlation
-    double lambda_j;    // Jump intensity (Daily prob)
+    double lambda_j;    // Jump intensity (Daily probability)
     double mu_j;        // Mean jump size
     double sigma_j;     // Jump size uncertainty
     double v0;          // Initial variance (Daily units)
 } SVCJParams;
 
 typedef struct {
-    double spot_vol;       // Annualized Volatility output
-    double jump_prob;      // Posterior Probability of Jump
-    double drift_residue;  // Realized - Expected
+    double spot_vol;       // Daily Volatility (sqrt(vt))
+    double jump_prob;      // Instantaneous probability
+    double drift_residue;  // Realized - Forecast
+    double drift_forecast; // Expected return for next step E[r_{t+1}]
     double vt;             // Internal Daily Variance
 } FilterState;
 
 typedef struct {
     double strike;
     double price;
-    double T;
+    double T; // Years (used for Black-Scholes inversion only)
     int is_call;
 } OptionContract;
 

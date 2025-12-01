@@ -10,6 +10,7 @@ from libc.string cimport memset
 
 cdef extern from "svcj_kernel.h":
     ctypedef struct SVCJParams:
+        double alpha
         double kappa
         double theta
         double sigma_v
@@ -23,6 +24,7 @@ cdef extern from "svcj_kernel.h":
         double spot_vol
         double jump_prob
         double drift_residue
+        double drift_forecast
         double vt
 
     ctypedef struct OptionContract:
@@ -43,7 +45,6 @@ def fit_asset_options(np.ndarray[double, ndim=1] log_returns,
     cdef int n_steps = log_returns.shape[0]
     cdef int n_opts = option_chain.shape[0]
     cdef SVCJParams params
-    # CRITICAL: Zero out memory to avoid garbage float values
     memset(&params, 0, sizeof(SVCJParams))
 
     cdef OptionContract* c_opts = <OptionContract*> malloc(n_opts * sizeof(OptionContract))
@@ -55,43 +56,44 @@ def fit_asset_options(np.ndarray[double, ndim=1] log_returns,
         c_opts[i].T = option_chain[i, 2]
         c_opts[i].is_call = <int>option_chain[i, 3]
 
-    # 1. Fit History
     optimize_params_history(&log_returns[0], n_steps, &params)
-    
-    # 2. Adjust with Options
     calibrate_to_options(c_opts, n_opts, spot_price, &params)
-    
-    # 3. Filter
     run_ukf_filter(&log_returns[0], n_steps, &params, states)
 
+    # Output Vectors
     spot_vols = np.zeros(n_steps)
     jump_probs = np.zeros(n_steps)
+    drift_forecasts = np.zeros(n_steps)
     
     for i in range(n_steps):
         spot_vols[i] = states[i].spot_vol
         jump_probs[i] = states[i].jump_prob
+        drift_forecasts[i] = states[i].drift_forecast
 
     free(c_opts)
     free(states)
 
-    # Return Dictionary (Verified Keys)
     return {
         "params": {
-            "kappa": params.kappa, 
-            "theta": params.theta * 252.0, # Annualize for display
-            "rho": params.rho, 
-            "sigma_v": params.sigma_v,
+            "alpha": params.alpha,
+            "theta_daily": params.theta,
+            "v0_daily": params.v0,
+            "rho": params.rho,
             "lambda_j": params.lambda_j
         },
         "spot_vol": spot_vols,
-        "jump_prob": jump_probs
+        "jump_prob": jump_probs,
+        "drift_forecast": drift_forecasts
     }
 
 def generate_current_screen(np.ndarray[double, ndim=2] market_returns):
+    """
+    Returns [Spot_Vol (Daily), Jump_Prob, Drift_Forecast (Daily)]
+    """
     cdef int n_assets = market_returns.shape[0]
     cdef int n_time = market_returns.shape[1]
     cdef int i
-    cdef np.ndarray[double, ndim=2] output = np.zeros((n_assets, 2))
+    cdef np.ndarray[double, ndim=2] output = np.zeros((n_assets, 3))
     
     cdef SVCJParams p
     cdef FilterState* states
@@ -106,12 +108,16 @@ def generate_current_screen(np.ndarray[double, ndim=2] market_returns):
             
             output[i, 0] = states[n_time-1].spot_vol
             output[i, 1] = states[n_time-1].jump_prob
+            output[i, 2] = states[n_time-1].drift_forecast
             
             free(states)
             
     return output
 
 def calculate_drift_residue(np.ndarray[double, ndim=1] log_returns):
+    """
+    Returns Vector: Realized_t - Forecast_t
+    """
     cdef int n_steps = log_returns.shape[0]
     cdef SVCJParams p
     memset(&p, 0, sizeof(SVCJParams))
