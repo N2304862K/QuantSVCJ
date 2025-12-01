@@ -2,7 +2,6 @@ from setuptools import setup, Extension
 from Cython.Build import cythonize
 import numpy
 import sys
-import os
 
 # Platform specific OpenMP flags
 if sys.platform.startswith("win"):
