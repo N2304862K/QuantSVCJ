@@ -3,19 +3,25 @@ import numpy
 from setuptools import setup, Extension
 from Cython.Build import cythonize
 
-# OpenMP / Optimization Flags
+# Platform-specific optimization flags
 if sys.platform.startswith("win"):
+    # Windows (MSVC)
     compile_args = ["/openmp", "/O2", "/fp:fast"]
     link_args = []
+    libs = [] 
 else:
+    # Linux/Mac (GCC/Clang)
+    # -lm is CRITICAL for math symbols like log/exp
     compile_args = ["-fopenmp", "-O3", "-ffast-math", "-march=native"]
     link_args = ["-fopenmp"]
+    libs = ["m"] 
 
 extensions = [
     Extension(
         "svcj_wrapper",
         sources=["svcj_wrapper.pyx", "svcj_kernel.c"],
         include_dirs=[numpy.get_include(), "."],
+        libraries=libs,  # <--- Fixes undefined symbol: _ZGVdN4v_log
         extra_compile_args=compile_args,
         extra_link_args=link_args,
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")]
