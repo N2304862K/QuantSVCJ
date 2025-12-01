@@ -3,14 +3,12 @@
 
 #include <math.h>
 #include <stdlib.h>
-#include <string.h>
+#include <stdio.h>
 
-// --- Configuration ---
+// Configuration
 #define MAX_ITER 50
-#define SUB_STEPS 20        // Integrate diffusion 20 times per daily step for stability
-#define DT 1.0              // 1 Day
-#define SUB_DT (DT/SUB_STEPS)
-#define JIT_THRESH 1e-8
+#define DT (1.0/252.0) // Assume inputs are daily returns, modeling annualized params
+#define JITTER 1e-8
 
 typedef struct {
     double mu;
@@ -23,7 +21,7 @@ typedef struct {
     double sigma_j;
 } SVCJParams;
 
-// --- Prototypes ---
+// Core Functions
 void clean_returns(double* returns, int n);
 void check_constraints(SVCJParams* params);
 
