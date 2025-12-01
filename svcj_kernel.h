@@ -5,49 +5,43 @@
 #include <stdlib.h>
 #include <string.h>
 
-// --- Structures ---
+// --- Data Structures ---
 typedef struct {
-    double kappa;
-    double theta;
-    double sigma_v;
-    double rho;
-    double lambda_j;
-    double mu_j;
-    double sigma_j;
-    double v0;
+    double kappa;       // Daily Mean Reversion
+    double theta;       // Daily Long-Run Variance
+    double sigma_v;     // Daily Vol-of-Vol
+    double rho;         // Correlation
+    double lambda_j;    // Daily Jump Intensity
+    double mu_j;        // Mean Jump Size
+    double sigma_j;     // Jump Uncertainty
+    double v0;          // Current Daily Variance state
 } SVCJParams;
+
+typedef struct {
+    double spot_vol;       // Daily Vol
+    double jump_prob;      // 0.0 - 1.0
+    double drift_residue;  
+} FilterState;
 
 typedef struct {
     double strike;
     double price;
-    double T_days; // Raw days to expiry
+    double T_years;
     int is_call;
-} RawOption;
+    int valid; // Flag for C-level filtering
+} OptionContract;
 
-typedef struct {
-    double spot_vol;
-    double jump_prob;
-    double drift_residue;
-} FilterResult;
+// --- Prototypes ---
 
-// --- Core API ---
-// Accepts RAW Prices, computes returns internally, processes options, outputs vectors
-void full_svcj_pipeline(
-    double* raw_prices, 
-    int n_price_steps,
-    RawOption* raw_options, 
-    int n_opts,
-    SVCJParams* out_params, 
-    FilterResult* out_states
-);
+// 1. Data Transformation (New: Raw Price -> Returns)
+void calculate_returns_from_prices(double* prices, int n_prices, double* out_returns);
 
-// Rolling analysis on raw price matrix
-void batch_process_matrix(
-    double* price_matrix, 
-    int n_assets, 
-    int n_time, 
-    double* out_spot_vols, 
-    double* out_jump_probs
-);
+// 2. Option Surface Smoothing (New: Filtering logic)
+void preprocess_options(OptionContract* opts, int n_opts, double spot_price);
+
+// 3. Core Physics
+void optimize_params_history(double* returns, int n_steps, SVCJParams* out);
+void run_ukf_filter(double* returns, int n_steps, SVCJParams* params, FilterState* out_states);
+void calibrate_to_options(OptionContract* options, int n_opts, double spot_price, SVCJParams* out_params);
 
 #endif
