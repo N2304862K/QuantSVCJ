@@ -3,14 +3,12 @@
 
 #include <math.h>
 #include <stdlib.h>
-#include <stdio.h>
+#include <float.h>
 
 // Configuration
-#define MAX_ITER 50       // Optimization iterations
-#define TOLERANCE 1e-4    // Convergence threshold
-#define JITTER_THRESHOLD 1e-8
-#define MIN_VAR 1e-6      // Hard floor for variance
-#define DT 1.0            // Daily data implicit
+#define DT 1.0/252.0 // Annualized Time Step
+#define MIN_VAR 1e-6
+#define MAX_VAR 10.0
 
 typedef struct {
     double mu;
@@ -24,10 +22,15 @@ typedef struct {
 } SVCJParams;
 
 // Core Functions
-void clean_returns(double* returns, int n);
+void clean_returns(double* returns, int n, int stride);
 void check_feller_and_fix(SVCJParams* params);
-double run_ukf_qmle(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
-void optimize_svcj_params(double* returns, int n, SVCJParams* params); // NEW: The Solver
+
+// Returns Negative Log Likelihood
+double run_ukf_qmle(double* returns, int n, int stride, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
+
+// Simple Coordinate Descent to fit parameters
+void optimize_svcj(double* returns, int n, int stride, SVCJParams* params);
+
 void price_option_chain(double s0, double* strikes, double* expiries, int* types, int n_opts, SVCJParams* params, double* out_prices);
 
 #endif
