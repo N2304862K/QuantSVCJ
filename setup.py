@@ -8,6 +8,7 @@ if sys.platform.startswith("win"):
     compile_args = ["/openmp", "/O2"]
     link_args = []
 else:
+    # Linux/Mac Optimization flags
     compile_args = ["-fopenmp", "-O3", "-ffast-math"]
     link_args = ["-fopenmp"]
 

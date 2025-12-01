@@ -5,22 +5,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Parameters in DAILY units for stability
 typedef struct {
-    double kappa;       // Mean reversion (> 0)
-    double theta;       // Long-run variance (> 0)
-    double sigma_v;     // Vol of vol (> 0)
-    double rho;         // Correlation (-1 to 1)
-    double lambda_j;    // Jump intensity (0 to 1)
+    double kappa;       // Mean reversion 
+    double theta;       // Long-run variance (Daily units: e.g. 0.00016 for 20% ann vol)
+    double sigma_v;     // Vol of vol
+    double rho;         // Correlation
+    double lambda_j;    // Jump intensity (Daily prob)
     double mu_j;        // Mean jump size
     double sigma_j;     // Jump size uncertainty
-    double v0;          // Initial variance state
+    double v0;          // Initial variance (Daily units)
 } SVCJParams;
 
 typedef struct {
-    double spot_vol;       // Annualized Volatility
-    double jump_prob;      // Instantaneous probability (0-1)
-    double drift_residue;  // Realized Return - Expected Drift
-    double vt;             // Internal variance state
+    double spot_vol;       // Annualized Volatility output
+    double jump_prob;      // Posterior Probability of Jump
+    double drift_residue;  // Realized - Expected
+    double vt;             // Internal Daily Variance
 } FilterState;
 
 typedef struct {
@@ -30,7 +31,6 @@ typedef struct {
     int is_call;
 } OptionContract;
 
-// Core Prototypes
 void optimize_params_history(double* returns, int n_steps, SVCJParams* out_best_params);
 void run_ukf_filter(double* returns, int n_steps, SVCJParams* params, FilterState* out_states);
 void calibrate_to_options(OptionContract* options, int n_opts, double spot_price, SVCJParams* out_params);
