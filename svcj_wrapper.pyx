@@ -55,10 +55,13 @@ def analyze_asset_raw(np.ndarray[double, ndim=1] raw_prices,
         c_opts[i].is_call = <int>raw_option_chain[i, 3]
 
     with nogil:
-        # Pipeline: Raw Prices -> Returns -> Optimize -> Option Calib -> Filter
+        # 1. Calc Returns
         calculate_returns_from_prices(&raw_prices[0], n_prices, c_returns)
+        # 2. Fit History
         optimize_params_history(c_returns, n_steps, &p)
+        # 3. Calibrate Options
         calibrate_to_options(c_opts, n_opts, spot_price, &p)
+        # 4. Filter
         run_ukf_filter(c_returns, n_steps, &p, states)
 
     spot_vols = np.zeros(n_steps)
@@ -74,12 +77,11 @@ def analyze_asset_raw(np.ndarray[double, ndim=1] raw_prices,
     free(c_opts)
     free(states)
 
-    # Dictionary keys match the struct and user expectation
     return {
-        "params": {"kappa": p.kappa, "theta": p.theta, "rho": p.rho},
+        "params": {"kappa": p.kappa, "theta": p.theta, "rho": p.rho, "sigma_v": p.sigma_v},
         "daily_volatility": spot_vols,
         "jump_probability": jump_probs,
-        "drift_residue": drift_residues 
+        "drift_residue": drift_residues
     }
 
 def screen_market_raw(np.ndarray[double, ndim=2] market_prices):
