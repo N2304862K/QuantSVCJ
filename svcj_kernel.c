@@ -24,8 +24,9 @@ void calculate_returns_from_prices(double* prices, int n_prices, double* out_ret
     for (int i = 1; i < n_prices; i++) {
         if (prices[i] > 1e-6 && prices[i-1] > 1e-6) {
             double ret = log(prices[i] / prices[i-1]);
-            if (ret > 2.0) ret = 0.0;
-            if (ret < -2.0) ret = 0.0;
+            // Hard Cap: Remove data errors (e.g. split artifacts > 100%)
+            if (ret > 1.0) ret = 0.0;
+            if (ret < -1.0) ret = 0.0;
             out_returns[i-1] = ret;
         } else {
             out_returns[i-1] = 0.0;
@@ -33,60 +34,66 @@ void calculate_returns_from_prices(double* prices, int n_prices, double* out_ret
     }
 }
 
-// --- Physics Constraints ---
+// --- STRICT Constraints ---
 int check_constraints(SVCJParams* p) {
-    if (p->theta < 1e-7 || p->theta > 0.01) return 0; // Max 10% daily vol base
+    if (p->theta < 1e-7 || p->theta > 0.01) return 0; // Max 10% daily base vol
     if (p->v0 < 1e-7 || p->v0 > 0.02) return 0;
-    if (p->kappa < 0.01 || p->kappa > 2.0) return 0;
-    if (p->sigma_v < 1e-6 || p->sigma_v > 0.5) return 0;
+    
+    // STRICT KAPPA: Fast mean reversion helps pull vol back after a jump
+    if (p->kappa < 0.1 || p->kappa > 5.0) return 0; 
+    
+    // STRICT SIGMA_V: Cap vol-of-vol to prevent "eating" jumps
+    // Max 0.1 means vol cannot change drastically in one day
+    if (p->sigma_v < 1e-6 || p->sigma_v > 0.1) return 0; 
+
     if (p->rho < -0.99 || p->rho > 0.99) return 0;
     return 1;
 }
 
-// --- Likelihood ---
+// --- Penalized Likelihood ---
 double calculate_nll(double* returns, int n_steps, SVCJParams* p) {
     if (!check_constraints(p)) return INF_LOSS;
     
     double nll = 0.0;
     double vt = p->v0;
-    // Assume a certain jump frequency for NLL cost
+    
+    // Explicit Jump Variance component
     double jump_var_contrib = p->lambda_j * (p->mu_j*p->mu_j + p->sigma_j*p->sigma_j);
 
     for (int i = 0; i < n_steps; i++) {
         if (vt < 1e-8) vt = 1e-8;
-        if (vt > 0.05) vt = 0.05; // Cap at 22% daily vol for stability
+        if (vt > 0.02) vt = 0.02; // Cap continuous variance at ~14% daily
 
         double drift = p->kappa * (p->theta - vt);
         double vt_pred = vt + drift;
         if (vt_pred < 1e-8) vt_pred = 1e-8;
 
         double total_var = vt_pred + jump_var_contrib;
+        double lik = density_norm(returns[i], 0.0, total_var);
         
-        // Likelihood
-        double prob = density_norm(returns[i], 0.0, total_var);
-        if (prob < 1e-15) prob = 1e-15;
-        nll -= log(prob);
+        if (lik < 1e-10) lik = 1e-10;
+        nll -= log(lik);
 
-        // Update
+        // Simple GARCH update for likelihood estimation
         double shock = (returns[i]*returns[i]) - total_var;
-        vt = vt_pred + (p->sigma_v * 1.0) * shock; 
+        vt = vt_pred + (p->sigma_v * 2.0) * shock; 
     }
+
+    // *** PENALTY TERM ***
+    // We penalize high Sigma_V. This forces the optimizer to choose Jumps
+    // to explain outliers, rather than cranking up volatility flexibility.
+    nll += (p->sigma_v * 5000.0); 
+
     return nll;
 }
 
-// --- 1. Robust Optimizer (Median Initialization) ---
 void optimize_params_history(double* returns, int n_steps, SVCJParams* out) {
-    // A. Robust Estimator for Diffusive Vol (Median)
-    // Allocating on stack for small history, or heap for safety
+    // 1. Robust Median Variance (The "Diffusive" Baseline)
     double* sq_rets = (double*)malloc(n_steps * sizeof(double));
     int valid_count = 0;
-    
     for(int i=0; i<n_steps; i++) {
-        if(returns[i] != 0.0) {
-            sq_rets[valid_count++] = returns[i] * returns[i];
-        }
+        if(returns[i] != 0.0) sq_rets[valid_count++] = returns[i] * returns[i];
     }
-    
     double median_var = 1e-4;
     if (valid_count > 0) {
         qsort(sq_rets, valid_count, sizeof(double), compare_doubles);
@@ -94,25 +101,22 @@ void optimize_params_history(double* returns, int n_steps, SVCJParams* out) {
     }
     free(sq_rets);
 
-    if (median_var < 1e-7) median_var = 1e-5;
-
-    // B. Initialize (Force Theta to Median, not Mean)
-    out->theta = median_var; 
+    // 2. Set strict priors favoring jumps
+    out->theta = median_var;
     out->v0 = median_var;
-    out->lambda_j = 0.05; 
+    out->lambda_j = 0.1; // Expect jumps
     out->mu_j = -0.02;
-    out->sigma_j = sqrt(median_var) * 5.0; // Jumps are 5x normal
+    out->sigma_j = sqrt(median_var) * 4.0; 
 
-    // C. Grid Search
+    // 3. Grid Search (Focus on low Sigma_V)
     double best_nll = INF_LOSS;
     SVCJParams best_p = *out;
     SVCJParams candidate = *out;
 
-    // We scan for Kappa (speed) and Sigma_V (volatility of volatility)
-    // Low Sigma_V prevents the model from explaining jumps as "just high vol"
-    double kappas[] = {0.05, 0.2, 0.5};
-    double rhos[] = {-0.6, -0.2};
-    double sigmas[] = {median_var * 0.1, median_var * 1.0, median_var * 3.0}; 
+    double kappas[] = {0.5, 1.5, 3.0};
+    double rhos[] = {-0.7, -0.4};
+    // Very constrained Sigma_V (Low vol-of-vol)
+    double sigmas[] = {1e-4, 1e-3, 0.01}; 
 
     for(int k=0; k<3; k++) {
         for(int r=0; r<2; r++) {
@@ -132,88 +136,87 @@ void optimize_params_history(double* returns, int n_steps, SVCJParams* out) {
     *out = best_p;
 }
 
-// --- 2. Robust UKF Filter (Jump Separation) ---
+// --- The "Judge" Filter ---
 void run_ukf_filter(double* returns, int n_steps, SVCJParams* p, FilterState* out_states) {
     double vt = p->v0;
     
     for (int i = 0; i < n_steps; i++) {
         if (vt < 1e-8) vt = 1e-8;
 
-        // A. Predict
+        // Predict
         double drift = p->kappa * (p->theta - vt);
         double vt_pred = vt + drift;
         if (vt_pred < 1e-8) vt_pred = 1e-8;
 
-        // B. Detect Jump (BEFORE Update)
-        double innovation = returns[i];
-        double diffusive_std = sqrt(vt_pred);
-        double z_score = innovation / diffusive_std;
+        // JUMP DETECTION (The Judge)
+        // We use a "Hybrid Volatility" for detection:
+        // Geometric Mean of (Current State, Long Run Theta)
+        // This anchors expectations. If vt exploded to 10%, but theta is 1%,
+        // we judge jumps based on ~3% vol, not 10%.
+        double judge_vol = sqrt(vt_pred) * 0.6 + sqrt(p->theta) * 0.4;
+        double z_score = returns[i] / judge_vol;
+        
         double jump_prob = 0.0;
-
-        // Lower threshold for sensitivity (2.5 sigma)
-        if (fabs(z_score) > 2.5) {
-            double power = fabs(z_score) - 2.5;
+        
+        // Strict 3-sigma detection
+        if (fabs(z_score) > 3.0) {
+            double power = fabs(z_score) - 3.0;
             if(power > 10) power = 10;
-            jump_prob = 1.0 - exp(-power * 1.5); // Sigmoid
+            jump_prob = 1.0 - exp(-power);
         }
 
-        // C. Robust Update
-        // If it's a jump, we reduce the weight of this observation on the continuous vol update.
-        // weight = 1.0 (Pure Diffusion) -> 0.0 (Pure Jump)
-        double diff_weight = 1.0 - jump_prob;
-        if (diff_weight < 0.05) diff_weight = 0.05; // Keep a little adaptation
-
-        // Kalman Gain
+        // UPDATE
+        double innovation = returns[i];
         double total_var = vt_pred + (p->lambda_j * p->sigma_j * p->sigma_j);
         double gain = (p->sigma_v * p->rho) / (total_var + 1e-9);
 
-        // Clamp gain
-        if (gain > 100.0) gain = 100.0;
-        if (gain < -100.0) gain = -100.0;
+        // Filter weighting
+        // If it's a jump, the continuous vol should NOT update much.
+        // weight = 1.0 (Diffusion) -> 0.0 (Jump)
+        double diffusion_weight = 1.0 - jump_prob;
+        if (diffusion_weight < 0.0) diffusion_weight = 0.0;
 
         double innov_sq = innovation * innovation;
         
-        // **KEY FIX**: Scale the update by diff_weight.
-        // Don't let jumps spike the continuous vol.
-        vt = vt_pred + (gain * (innov_sq - total_var) * diff_weight);
+        // Only update 'vt' based on the 'diffusive' portion of the return
+        vt = vt_pred + (gain * (innov_sq - total_var) * diffusion_weight);
         
-        // Bounds
-        if (vt > p->theta * 10.0) vt = p->theta * 10.0;
+        // Clamp
+        if (vt > 0.02) vt = 0.02; // Max 14% Daily
         if (vt < 1e-8) vt = 1e-8;
 
-        // Output
         out_states[i].spot_vol = sqrt(vt);
         out_states[i].jump_prob = jump_prob;
         out_states[i].drift_residue = innovation;
     }
 }
 
-// --- 3. Option Calibration ---
+// --- Option Calib ---
 void calibrate_to_options(OptionContract* options, int n_opts, double spot, SVCJParams* out) {
-    double sum_iv_sq = 0.0;
+    // Standard calibration logic...
+    double sum_iv = 0.0;
     int count = 0;
-    double skew = 0.0;
-
+    
     for(int i=0; i<n_opts; i++) {
         double m = options[i].strike / spot;
-        if (m < 0.85 || m > 1.15) continue; // Strict Moneyness
+        if (m < 0.85 || m > 1.15) continue;
         if (options[i].price < 0.01) continue;
-        if (options[i].T_years < 0.04) continue; // > 2 weeks
-
+        
         if (fabs(m - 1.0) < 0.05) {
             double iv = (options[i].price / spot * 2.5) / sqrt(options[i].T_years);
-            sum_iv_sq += (iv * iv) / 252.0; // Convert to Daily
+            double var = (iv*iv)/252.0;
+            sum_iv += var;
             count++;
         }
-        if (m < 0.95 && !options[i].is_call) skew -= 1.0;
-    }
-
-    if (count > 0) {
-        double imp_theta = sum_iv_sq / count;
-        // Conservative blend: 50/50 to keep robust stats relevant
-        out->theta = (out->theta * 0.5) + (imp_theta * 0.5);
-        out->v0 = imp_theta; 
     }
     
-    if (skew < -3.0) out->rho = -0.6;
+    // Only adjust Theta/V0 slightly to market levels
+    // We trust our historical Median vol for the dynamics, 
+    // we only trust options for the "Level".
+    if (count > 0) {
+        double implied_level = sum_iv / count;
+        out->theta = implied_level; // Set long run anchor to implied
+        // Don't overwrite V0 completely, blend it
+        out->v0 = (out->v0 + implied_level) * 0.5;
+    }
 }
