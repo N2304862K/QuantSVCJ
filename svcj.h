@@ -3,40 +3,30 @@
 
 #include <math.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdio.h>
 
-// --- Configuration ---
-#define MAX_ITER 50       // Optimization iterations
-#define TOLERANCE 1e-6
-#define JITTER_THRESHOLD 1e-8
-#define DT (1.0/252.0)    // Daily steps annualized
-#define PENALTY_VAL 1e9   // For failed likelihoods
+// --- Config ---
+#define MAX_ITER 50
+#define DT (1.0/252.0)
+#define JITTER 1e-8
 
-// --- Data Structures ---
+// --- Structures ---
 typedef struct {
-    double mu;          // Drift
-    double kappa;       // Mean reversion speed
-    double theta;       // Long-run variance
-    double sigma_v;     // Vol of Vol
-    double rho;         // Correlation
-    double lambda_j;    // Jump intensity
-    double mu_j;        // Mean jump size
-    double sigma_j;     // Jump size uncertainty
+    double mu;
+    double kappa;
+    double theta;
+    double sigma_v;
+    double rho;
+    double lambda_j;
+    double mu_j;
+    double sigma_j;
 } SVCJParams;
 
-// --- Function Prototypes ---
-
-// Utils
+// --- Prototypes ---
 void clean_returns(double* returns, int n);
-void check_feller_and_fix(SVCJParams* params);
-double estimate_initial_variance(double* returns, int n);
-
-// Core Computation
-double run_ukf_qmle(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
-void fit_svcj_history(double* returns, int n, SVCJParams* params);
-
-// Option Handling
-void calibrate_option_adjustment(double s0, double* strikes, double* expiries, int* types, double* mkt_prices, int n_opts, SVCJParams* params);
+void check_constraints(SVCJParams* p);
+double run_filter(double* returns, int n, SVCJParams* p, double* out_spot, double* out_jump);
+void fit_history(double* returns, int n, SVCJParams* p);
+void calibrate_options(double s0, double* strikes, double* expiries, int* types, double* prices, int n_opts, SVCJParams* p);
 
 #endif
