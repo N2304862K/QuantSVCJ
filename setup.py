@@ -3,11 +3,12 @@ import numpy
 from setuptools import setup, Extension
 from Cython.Build import cythonize
 
+# OpenMP / Optimization Flags
 if sys.platform.startswith("win"):
-    compile_args = ["/openmp", "/O2"]
+    compile_args = ["/openmp", "/O2", "/fp:fast"]
     link_args = []
 else:
-    compile_args = ["-fopenmp", "-O3", "-ffast-math"]
+    compile_args = ["-fopenmp", "-O3", "-ffast-math", "-march=native"]
     link_args = ["-fopenmp"]
 
 extensions = [
