@@ -3,31 +3,38 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 
-// --- CONFIGURATION: ANNUALIZED STATE / DAILY STEP ---
+// --- Config ---
+#define DT 1.0              // 1 Day
 #define DAYS_PER_YEAR 252.0
-#define DT (1.0 / DAYS_PER_YEAR) 
-
-// Stability constants
-#define MAX_ITER 200
-#define JITTER_THRESHOLD 1e-8 
-#define MIN_VAR 1e-4 // Floor for annualized variance (1% vol)
+#define JITTER 1e-9
+#define MAX_OPT_ITER 50     // Optimization steps per asset
+#define LEARN_RATE 0.1      // Initial learning step for parameters
 
 typedef struct {
-    double mu;          // Annualized Drift
-    double kappa;       // Annualized Mean Reversion
-    double theta;       // Annualized Long-Run Variance
-    double sigma_v;     // Annualized Vol-of-Vol
-    double rho;         // Correlation
-    double lambda_j;    // Annualized Jump Intensity
-    double mu_j;        // Mean Jump Size (on return scale)
-    double sigma_j;     // Jump Size Std Dev
+    double mu;
+    double kappa;
+    double theta;
+    double sigma_v;
+    double rho;
+    double lambda_j;
+    double mu_j;
+    double sigma_j;
 } SVCJParams;
 
-// Core Functions
-void clean_and_copy(double* src, double* dest, int n); // New safe copy utility
-void check_stability(SVCJParams* params);
-double run_ukf_qmle(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
-void price_option_chain(double s0, double* strikes, double* expiries, int* types, int n_opts, SVCJParams* params, double* out_prices);
+// --- Core API ---
+void clean_returns(double* returns, int n, int stride);
+void constrain_params(SVCJParams* p);
+
+// The Core Likelihood Function
+double run_ukf_likelihood(double* returns, int n, int stride, SVCJParams* p, double* out_spot, double* out_jump);
+
+// Calibration Functions
+void calibrate_to_history(double* returns, int n, int stride, SVCJParams* p);
+void calibrate_to_options(double s0, double* strikes, double* expiries, int* types, double* mkt_prices, int n_opts, SVCJParams* p);
+
+// Pricing
+void price_option_chain(double s0, double* strikes, double* expiries, int* types, int n_opts, SVCJParams* p, double* out_prices);
 
 #endif
