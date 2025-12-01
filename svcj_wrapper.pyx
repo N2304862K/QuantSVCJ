@@ -17,30 +17,33 @@ cdef extern from "svcj.h":
 # --- Helpers ---
 cdef np.ndarray[double, ndim=2, mode='c'] _sanitize_input(object input_matrix):
     cdef np.ndarray[double, ndim=2] arr = np.asarray(input_matrix, dtype=np.float64)
-    # If rows > cols, transpose to get (Assets, Time)
     if arr.shape[0] > arr.shape[1]: 
         return np.ascontiguousarray(arr.T)
     return np.ascontiguousarray(arr)
 
-# --- 1. Asset-Specific Option Adjusted (Flattened Result) ---
-def generate_asset_option_adjusted(double[:] returns, double s0, double[:, :] option_chain):
+# --- 1. Asset-Specific Option Adjusted ---
+def generate_asset_option_adjusted(double[:] returns, double s0, object option_chain):
     """
-    Returns a FLAT dictionary. Params are at root level.
+    option_chain: List/Array of [Strike, Expiry, Type, Price]
     """
     cdef int n = returns.shape[0]
-    cdef int n_opts = option_chain.shape[0]
-    cdef SVCJParams p
     
-    # Cast Inputs
+    # 1. Safe Conversion to NumPy Array first
+    cdef np.ndarray arr = np.array(option_chain, copy=False)
+    cdef int n_opts = arr.shape[0]
+
+    # 2. Extract Columns with Explicit Casting (Fixes AttributeError)
+    cdef np.ndarray[double, ndim=1, mode='c'] ks = np.ascontiguousarray(arr[:, 0], dtype=np.float64)
+    cdef np.ndarray[double, ndim=1, mode='c'] ts = np.ascontiguousarray(arr[:, 1], dtype=np.float64)
+    cdef np.ndarray[int, ndim=1, mode='c'] types = np.ascontiguousarray(arr[:, 2].astype(np.int32), dtype=np.int32)
+    
+    # 3. Process Returns
     cdef np.ndarray[double, ndim=1, mode='c'] c_ret = np.ascontiguousarray(returns)
-    cdef np.ndarray[double, ndim=1, mode='c'] ks = np.ascontiguousarray(option_chain[:, 0])
-    cdef np.ndarray[double, ndim=1, mode='c'] ts = np.ascontiguousarray(option_chain[:, 1])
-    cdef np.ndarray[int, ndim=1, mode='c'] types = np.ascontiguousarray(option_chain[:, 2].astype(np.int32))
-    
-    # Alloc Outputs
     cdef np.ndarray[double, ndim=1] spot_vol = np.zeros(n)
     cdef np.ndarray[double, ndim=1] jump_prob = np.zeros(n)
     cdef np.ndarray[double, ndim=1] model_prices = np.zeros(n_opts)
+    
+    cdef SVCJParams p
     
     clean_returns(&c_ret[0], n)
     optimize_svcj(&c_ret[0], n, &p, &spot_vol[0], &jump_prob[0])
@@ -48,7 +51,6 @@ def generate_asset_option_adjusted(double[:] returns, double s0, double[:, :] op
     # Price
     price_option_chain(s0, &ks[0], &ts[0], &types[0], n_opts, &p, spot_vol[n-1], &model_prices[0])
     
-    # Return FLAT dictionary (Fixes KeyError)
     return {
         "kappa": p.kappa,
         "theta": p.theta,
@@ -72,6 +74,7 @@ def analyze_market_rolling(object market_returns, int window):
     
     if n_windows < 1: return None
     
+    # Returns [Asset, Window, 5 Params]
     cdef np.ndarray[double, ndim=3] results = np.zeros((n_assets, n_windows, 5))
     cdef SVCJParams p
     cdef int i, w
@@ -133,6 +136,7 @@ def generate_residue_analysis(double[:] returns, int forward_window):
     
     cdef int t
     for t in range(n - forward_window):
+        # Return - Drift
         residues[t] = c_ret[t + forward_window] - (p.mu * (1.0/252.0));
         
     return residues

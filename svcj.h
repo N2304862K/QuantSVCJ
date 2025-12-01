@@ -8,8 +8,8 @@
 
 // Configuration
 #define DT (1.0/252.0)     // Time step (Daily)
-#define NM_ITER 150        // Nelder-Mead Iterations
-#define JITTER 1e-8        // Minimum variance clamp
+#define NM_ITER 200        // Nelder-Mead Iterations
+#define SQRT_2PI 2.50662827463
 
 typedef struct {
     double mu;
