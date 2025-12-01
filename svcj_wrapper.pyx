@@ -6,7 +6,6 @@ import numpy as np
 cimport numpy as np
 from cython.parallel import prange
 from libc.stdlib cimport malloc, free
-from libc.string cimport memset
 
 cdef extern from "svcj_kernel.h":
     ctypedef struct SVCJParams:
@@ -16,94 +15,83 @@ cdef extern from "svcj_kernel.h":
         double rho
         double v0
 
-    ctypedef struct FilterState:
+    ctypedef struct FilterResult:
         double spot_vol
         double jump_prob
         double drift_residue
 
-    ctypedef struct OptionContract:
+    ctypedef struct RawOption:
         double strike
         double price
-        double T
+        double T_days
         int is_call
 
-    void optimize_params_history(double* returns, int n_steps, SVCJParams* out) nogil
-    void run_ukf_filter(double* returns, int n_steps, SVCJParams* p, FilterState* out) nogil
-    void calibrate_to_options(OptionContract* opts, int n, double spot, SVCJParams* out) nogil
+    void full_svcj_pipeline(double* raw_prices, int n_price_steps, RawOption* opts, int n_opts, SVCJParams* p, FilterResult* res) nogil
+    void batch_process_matrix(double* mat, int assets, int time, double* v, double* j) nogil
 
-# --- Python API ---
+# --- PUBLIC INTERFACE ---
 
-def fit_asset_options(np.ndarray[double, ndim=1] log_returns, 
-                      np.ndarray[double, ndim=2] option_chain, 
-                      double spot_price):
-    cdef int n_steps = log_returns.shape[0]
-    cdef int n_opts = option_chain.shape[0]
-    cdef SVCJParams p
-    memset(&p, 0, sizeof(SVCJParams))
+def analyze_asset_raw(np.ndarray[double, ndim=1] prices_array, 
+                      np.ndarray[double, ndim=2] option_array):
+    """
+    INPUTS:
+      prices_array: 1D array of raw close prices (Time Series)
+      option_array: 2D array [Strike, Price, DaysToExpiry, IsCall(1/0)]
+    """
+    cdef int n_prices = prices_array.shape[0]
+    cdef int n_opts = option_array.shape[0]
     
-    cdef OptionContract* c_opts = <OptionContract*> malloc(n_opts * sizeof(OptionContract))
-    cdef FilterState* states = <FilterState*> malloc(n_steps * sizeof(FilterState))
+    # Allocations
+    cdef SVCJParams params
+    cdef FilterResult* results = <FilterResult*> malloc((n_prices - 1) * sizeof(FilterResult))
+    cdef RawOption* c_opts = <RawOption*> malloc(n_opts * sizeof(RawOption))
     
+    # Marshal Options
     for i in range(n_opts):
-        c_opts[i].strike = option_chain[i, 0]
-        c_opts[i].price = option_chain[i, 1]
-        c_opts[i].T = option_chain[i, 2]
-        c_opts[i].is_call = <int>option_chain[i, 3]
+        c_opts[i].strike = option_array[i, 0]
+        c_opts[i].price = option_array[i, 1]
+        c_opts[i].T_days = option_array[i, 2]
+        c_opts[i].is_call = <int>option_array[i, 3]
 
-    # 1. Fit History (Daily Terms)
-    optimize_params_history(&log_returns[0], n_steps, &p)
+    # CALL KERNEL (GIL release for speed if needed, though mostly serial here)
+    full_svcj_pipeline(&prices_array[0], n_prices, c_opts, n_opts, &params, results)
     
-    # 2. Adjust using Options (Converts Annual Implied to Daily Internal)
-    calibrate_to_options(c_opts, n_opts, spot_price, &p)
-    
-    # 3. Filter
-    run_ukf_filter(&log_returns[0], n_steps, &p, states)
-    
-    spot_vols = np.zeros(n_steps)
-    jump_probs = np.zeros(n_steps)
-    
-    for i in range(n_steps):
-        spot_vols[i] = states[i].spot_vol
-        jump_probs[i] = states[i].jump_prob
+    # Unpack Results
+    # Since returns are N-1, output arrays are N-1
+    spot_vols = np.zeros(n_prices - 1)
+    jump_probs = np.zeros(n_prices - 1)
+    residues = np.zeros(n_prices - 1)
 
+    for i in range(n_prices - 1):
+        spot_vols[i] = results[i].spot_vol
+        jump_probs[i] = results[i].jump_prob
+        residues[i] = results[i].drift_residue
+        
     free(c_opts)
-    free(states)
-
+    free(results)
+    
     return {
-        "params": {"kappa": p.kappa, "theta_daily": p.theta, "rho": p.rho},
-        "spot_vol_daily": spot_vols,
-        "jump_prob": jump_probs
+        "params": {"kappa": params.kappa, "theta_daily": params.theta, "rho": params.rho},
+        "spot_vol": spot_vols,
+        "jump_prob": jump_probs,
+        "residues": residues
     }
 
-def generate_current_screen(np.ndarray[double, ndim=2] market_returns):
-    cdef int n_assets = market_returns.shape[0]
-    cdef int n_time = market_returns.shape[1]
-    cdef int i
-    cdef np.ndarray[double, ndim=2] output = np.zeros((n_assets, 2))
-    cdef SVCJParams p
-    cdef FilterState* states
+def screen_market_raw(np.ndarray[double, ndim=2] price_matrix):
+    """
+    INPUT:
+      price_matrix: Raw Prices [Assets x Time]
+    OUTPUT:
+      [Assets x 2] matrix of (Last Spot Vol, Last Jump Prob)
+    """
+    cdef int n_assets = price_matrix.shape[0]
+    cdef int n_time = price_matrix.shape[1]
     
+    cdef np.ndarray[double, ndim=1] out_vols = np.zeros(n_assets)
+    cdef np.ndarray[double, ndim=1] out_jumps = np.zeros(n_assets)
+    
+    # OpenMP Parallel Batch Processing
     with nogil:
-        for i in prange(n_assets):
-            memset(&p, 0, sizeof(SVCJParams))
-            states = <FilterState*> malloc(n_time * sizeof(FilterState))
-            optimize_params_history(&market_returns[i, 0], n_time, &p)
-            run_ukf_filter(&market_returns[i, 0], n_time, &p, states)
-            output[i, 0] = states[n_time-1].spot_vol
-            output[i, 1] = states[n_time-1].jump_prob
-            free(states)
-            
-    return output
-
-def calculate_drift_residue(np.ndarray[double, ndim=1] log_returns):
-    cdef int n_steps = log_returns.shape[0]
-    cdef SVCJParams p
-    memset(&p, 0, sizeof(SVCJParams))
-    cdef FilterState* states = <FilterState*> malloc(n_steps * sizeof(FilterState))
-    cdef np.ndarray[double, ndim=1] residues = np.zeros(n_steps)
-    optimize_params_history(&log_returns[0], n_steps, &p)
-    run_ukf_filter(&log_returns[0], n_steps, &p, states)
-    for i in range(n_steps):
-        residues[i] = states[i].drift_residue
-    free(states)
-    return residues
+        batch_process_matrix(&price_matrix[0,0], n_assets, n_time, &out_vols[0], &out_jumps[0])
+        
+    return np.column_stack((out_vols, out_jumps))

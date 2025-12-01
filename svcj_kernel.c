@@ -6,199 +6,203 @@
 #define SQRT_2PI 2.50662827463
 #define INF_LOSS 1e15
 
-// Helper: Gaussian PDF
-double density_norm(double x, double mean, double var) {
-    if (var < 1e-9) var = 1e-9;
-    return (1.0 / (SQRT_2PI * sqrt(var))) * exp(-0.5 * (x - mean)*(x - mean) / var);
+// --- Internal Helper: Log Return Calculation ---
+// Converts Raw Prices -> Log Returns in place (buffer size n-1)
+void compute_log_returns(double* prices, int n, double* returns) {
+    for(int i=0; i < n-1; i++) {
+        if(prices[i] > 0 && prices[i+1] > 0)
+            returns[i] = log(prices[i+1] / prices[i]);
+        else
+            returns[i] = 0.0;
+    }
 }
 
-// --- Constraint Checker (Daily Units) ---
+// --- Internal Helper: Option Surface Logic ---
+// 1. Filters far OTM/illiquid options
+// 2. Converts Days to Years
+// 3. Estimates implied daily variance
+double extract_implied_theta(RawOption* opts, int n_opts, double spot) {
+    if(n_opts == 0) return 0.0;
+
+    double sum_var = 0.0;
+    int count = 0;
+    double skew_sum = 0.0;
+
+    for(int i=0; i<n_opts; i++) {
+        // FILTER 1: Moneyness (Keep within 15% of spot)
+        double moneyness = opts[i].strike / spot;
+        if(moneyness < 0.85 || moneyness > 1.15) continue;
+
+        // FILTER 2: Time (Ignore options < 7 days or > 1 year)
+        if(opts[i].T_days < 7.0 || opts[i].T_days > 365.0) continue;
+
+        // FILTER 3: Intrinsic Value check (remove deep ITM arbitrage)
+        double intrinsic = opts[i].is_call ? (spot - opts[i].strike) : (opts[i].strike - spot);
+        if (intrinsic > 0 && opts[i].price < intrinsic) continue;
+
+        // MATH: Brenner-Subrahmanyam Approx for ATM Vol
+        // Vol_Ann = (Price / Spot) * sqrt(2*PI / T_years)
+        // We accept a wider range for "ATM" here to get more data points
+        if(fabs(moneyness - 1.0) < 0.1) {
+            double t_years = opts[i].T_days / 365.0;
+            double vol_ann = (opts[i].price / spot) * sqrt(2.0 * PI / t_years);
+            
+            // Convert to Daily Variance
+            double daily_var = (vol_ann * vol_ann) / 252.0;
+            if(daily_var > 0 && daily_var < 0.01) { // Sanity check
+                sum_var += daily_var;
+                count++;
+            }
+        }
+    }
+    
+    if(count == 0) return -1.0; // Signal failure
+    return sum_var / count;
+}
+
+// --- Internal: Likelihood & Optimization (Same as before but condensed) ---
 int check_constraints(SVCJParams* p) {
-    // 1. Boundaries suitable for DAILY variance (approx 0.0001)
-    if (p->theta < 1e-8 || p->theta > 0.01) return 0; // Max 10% daily move allowed
-    if (p->v0 < 1e-8 || p->v0 > 0.01) return 0;
-    
-    // 2. Kappa (Daily reversion is slower than annual)
-    // 0.001 (very slow) to 0.5 (half-life of 2 days)
-    if (p->kappa < 0.001 || p->kappa > 1.0) return 0; 
-    
-    // 3. Sigma_v (Vol of Vol)
+    if (p->theta < 1e-8 || p->theta > 0.01) return 0;
+    if (p->kappa < 0.001 || p->kappa > 1.0) return 0;
     if (p->sigma_v < 1e-4 || p->sigma_v > 0.5) return 0;
-    
-    // 4. Correlation
     if (p->rho < -0.99 || p->rho > 0.99) return 0;
-
-    // 5. Feller Condition (2 * k * theta > sigma_v^2)
-    // Relaxed slightly for daily estimation noise
-    double lhs = 2.0 * p->kappa * p->theta;
-    double rhs = p->sigma_v * p->sigma_v;
-    if (lhs < rhs * 0.7) return 0; // Hard stop if violation is severe
-
     return 1;
 }
 
-// --- Likelihood (Daily Terms) ---
-double calculate_nll(double* returns, int n_steps, SVCJParams* p) {
+double calc_nll(double* rets, int n, SVCJParams* p) {
     if (!check_constraints(p)) return INF_LOSS;
-
     double nll = 0.0;
     double vt = p->v0;
-    
-    // Pre-calc Jump Variance Contribution (Daily)
-    double jump_var_contrib = p->lambda_j * (p->mu_j*p->mu_j + p->sigma_j*p->sigma_j);
+    double jump_var = p->lambda_j * (p->mu_j*p->mu_j + p->sigma_j*p->sigma_j);
 
-    for (int i = 0; i < n_steps; i++) {
-        // Clamp (Prevent numeric explosion)
-        if (vt < 1e-8) vt = 1e-8;
-        if (vt > 0.005) vt = 0.005; // Cap at ~7% daily vol
-
-        // 1. Expected Variance (Discrete Euler)
-        // No 'dt' multiplication needed if kappa/theta are daily
-        double drift = p->kappa * (p->theta - vt);
-        double vt_pred = vt + drift; 
-        if (vt_pred < 1e-8) vt_pred = 1e-8;
-
-        // 2. Total Variance = Continuous + Jumps
-        double total_var = vt_pred + jump_var_contrib;
+    for (int i=0; i<n; i++) {
+        if(vt < 1e-8) vt = 1e-8;
+        if(vt > 0.005) vt = 0.005;
         
-        // 3. Likelihood
-        double lik = density_norm(returns[i], 0.0, total_var);
-        if (lik < 1e-10) lik = 1e-10;
-        nll -= log(lik);
-
-        // 4. State Update (Proxy for Filter)
-        double shock = (returns[i]*returns[i]) - total_var;
-        vt = vt_pred + (p->sigma_v * 0.1) * shock; 
+        double drift = p->kappa * (p->theta - vt);
+        double vt_pred = vt + drift;
+        double tot_var = vt_pred + jump_var;
+        
+        double pdf = (1.0/(SQRT_2PI*sqrt(tot_var))) * exp(-0.5*rets[i]*rets[i]/tot_var);
+        if(pdf < 1e-10) pdf = 1e-10;
+        nll -= log(pdf);
+        
+        double shock = (rets[i]*rets[i]) - tot_var;
+        vt = vt_pred + (p->sigma_v * 0.1) * shock;
     }
     return nll;
 }
 
-// --- Optimizer: Smart Grid (Daily Config) ---
-void optimize_params_history(double* returns, int n_steps, SVCJParams* out) {
-    // 1. Initial Guess based on Realized Variance
+void optimize_internal(double* rets, int n, SVCJParams* out) {
+    // 1. Init from Realized
     double sum_sq = 0.0;
-    for(int i=0; i<n_steps; i++) sum_sq += returns[i]*returns[i];
-    double realized_daily_var = sum_sq / n_steps;
+    for(int i=0; i<n; i++) sum_sq += rets[i]*rets[i];
+    double realized = sum_sq / n;
     
-    out->theta = realized_daily_var;
-    out->v0 = realized_daily_var;
-    out->lambda_j = 0.05; // 5% chance of jump per day
-    out->mu_j = -0.01;
-    out->sigma_j = sqrt(realized_daily_var) * 2.0;
+    out->theta = realized;
+    out->v0 = realized;
+    out->lambda_j = 0.05; out->mu_j = -0.01; out->sigma_j = sqrt(realized)*2.0;
 
-    // 2. Grid Search (Ranges adapted for Daily terms)
-    double kappas[] = {0.01, 0.05, 0.15};
-    double rhos[] = {-0.7, -0.4, 0.0};
-    double sigmas[] = {1e-4, 1e-3, 5e-3}; // Daily vol-of-vol is small
+    // 2. Grid Search
+    double kappas[] = {0.02, 0.05, 0.10};
+    double rhos[] = {-0.6, -0.3, 0.0};
+    double sigmas[] = {0.0005, 0.002, 0.005};
     
     double best_nll = INF_LOSS;
-    SVCJParams best_p = *out;
-    SVCJParams candidate = *out;
-
+    SVCJParams cand = *out;
+    SVCJParams best = *out;
+    
     for(int k=0; k<3; k++) {
         for(int r=0; r<3; r++) {
             for(int s=0; s<3; s++) {
-                candidate.kappa = kappas[k];
-                candidate.rho = rhos[r];
-                candidate.sigma_v = sigmas[s];
-                
-                // Enforce Feller inside grid
-                if (2*candidate.kappa*candidate.theta < candidate.sigma_v*candidate.sigma_v) {
-                    // Reduce sigma_v to satisfy feller
-                    candidate.sigma_v = sqrt(1.8 * candidate.kappa * candidate.theta);
-                }
-
-                double nll = calculate_nll(returns, n_steps, &candidate);
-                if (nll < best_nll) {
-                    best_nll = nll;
-                    best_p = candidate;
-                }
+                cand.kappa = kappas[k]; cand.rho = rhos[r]; cand.sigma_v = sigmas[s];
+                double val = calc_nll(rets, n, &cand);
+                if(val < best_nll) { best_nll = val; best = cand; }
             }
         }
     }
-    *out = best_p;
+    *out = best;
 }
 
-// --- UKF Filter (Daily Terms) ---
-void run_ukf_filter(double* returns, int n_steps, SVCJParams* p, FilterState* out_states) {
+void run_filter_internal(double* rets, int n, SVCJParams* p, FilterResult* out) {
     double vt = p->v0;
-    
-    for (int i = 0; i < n_steps; i++) {
-        if (vt < 1e-8) vt = 1e-8;
-
-        // 1. Predict
+    for(int i=0; i<n; i++) {
+        if(vt < 1e-8) vt = 1e-8;
         double drift = p->kappa * (p->theta - vt);
         double vt_pred = vt + drift;
-        if (vt_pred < 1e-8) vt_pred = 1e-8;
-
-        // 2. Measure
-        double jump_var = p->lambda_j * (p->mu_j*p->mu_j + p->sigma_j*p->sigma_j);
-        double total_var = vt_pred + jump_var;
-        double innovation = returns[i];
-
-        // 3. Update (Kalman Gain)
-        // Gain logic tailored for daily steps
-        double kalman_gain = (p->sigma_v * p->rho) / (total_var + 1e-9);
-        double innov_sq = innovation * innovation;
+        double tot_var = vt_pred + p->lambda_j * (p->mu_j*p->mu_j + p->sigma_j*p->sigma_j);
         
-        vt = vt_pred + kalman_gain * (innov_sq - total_var);
+        // Update
+        double innov = rets[i];
+        double kgain = (p->sigma_v * p->rho) / (tot_var + 1e-9);
+        vt = vt_pred + kgain * (innov*innov - tot_var);
         
-        // Hard clamp for stability
-        if (vt < 1e-8) vt = 1e-8;
-        if (vt > 0.01) vt = 0.01; // Max 10% daily vol
-
-        // 4. Jump Prob
-        double z_score = innovation / sqrt(vt_pred);
-        double jump_p = 0.0;
-        if (fabs(z_score) > 3.0) {
-            jump_p = 1.0 - exp(-(fabs(z_score)-3.0));
-        }
-
-        out_states[i].vt = vt;
-        out_states[i].spot_vol = sqrt(vt); // This is DAILY Vol
-        out_states[i].jump_prob = jump_p;
-        out_states[i].drift_residue = innovation; // Simple residue
+        if(vt < 1e-8) vt = 1e-8;
+        if(vt > 0.01) vt = 0.01;
+        
+        double z = innov / sqrt(vt_pred);
+        double jp = (fabs(z) > 3.0) ? (1.0 - exp(-(fabs(z)-3.0))) : 0.0;
+        
+        out[i].spot_vol = sqrt(vt);
+        out[i].jump_prob = jp;
+        out[i].drift_residue = innov;
     }
 }
 
-// --- Option Calibration (Annual -> Daily Conversion) ---
-void calibrate_to_options(OptionContract* options, int n_opts, double spot, SVCJParams* out) {
-    if (n_opts == 0) return;
+// --- PUBLIC EXPOSED FUNCTIONS ---
 
-    double sum_implied_daily_var = 0.0;
-    int count = 0;
-    double skew_accum = 0.0;
-
-    for(int i=0; i<n_opts; i++) {
-        double moneyness = options[i].strike / spot;
-        double price_norm = options[i].price / spot;
-        double t_sqrt = sqrt(options[i].T); // T is in Years
-        
-        // ATM Approximation
-        if (fabs(moneyness - 1.0) < 0.05) {
-            // Brenner-Subrahmanyam: Vol_Ann ~ (Price/S) * 2.5 / sqrt(T)
-            double vol_ann = (price_norm * 2.50) / t_sqrt;
-            
-            // CONVERT TO DAILY VARIANCE
-            // Var_Daily = (Vol_Ann^2) / 252
-            double var_daily = (vol_ann * vol_ann) / 252.0;
-            
-            sum_implied_daily_var += var_daily;
-            count++;
-        }
-        
-        // Skew Check
-        if (moneyness < 0.95 && options[i].is_call == 0) skew_accum -= 1.0;
+void full_svcj_pipeline(double* raw_prices, int n_price_steps,
+                        RawOption* raw_options, int n_opts,
+                        SVCJParams* out_params, FilterResult* out_states) {
+    
+    // 1. Pre-process: Calculate Returns internally
+    int n_ret = n_price_steps - 1;
+    double* returns = (double*)malloc(n_ret * sizeof(double));
+    compute_log_returns(raw_prices, n_price_steps, returns);
+    
+    // 2. Optimization: Fit History
+    optimize_internal(returns, n_ret, out_params);
+    
+    // 3. Option Integration: Filter & Smooth Option Surface
+    // We pass the END spot price (last element)
+    double spot_end = raw_prices[n_price_steps - 1];
+    double implied_theta = extract_implied_theta(raw_options, n_opts, spot_end);
+    
+    if(implied_theta > 0) {
+        // If options are valid, they override the historical long-run variance
+        out_params->theta = implied_theta;
+        out_params->v0 = implied_theta; // Anchor current state to option market
     }
+    
+    // 4. Run Filter
+    run_filter_internal(returns, n_ret, out_params, out_states);
+    
+    free(returns);
+}
 
-    // Update Internal State to Match Option Market
-    if (count > 0) {
-        double avg_daily_var = sum_implied_daily_var / count;
-        out->theta = avg_daily_var; // Long run daily variance
-        out->v0 = avg_daily_var;    // Current daily variance
+void batch_process_matrix(double* price_matrix, int n_assets, int n_time, 
+                          double* out_spot_vols, double* out_jump_probs) {
+    
+    // Used for screening. No options involved, just pure history fit.
+    int n_ret = n_time - 1;
+    
+    for(int i=0; i<n_assets; i++) {
+        double* asset_prices = &price_matrix[i * n_time];
+        double* returns = (double*)malloc(n_ret * sizeof(double));
+        compute_log_returns(asset_prices, n_time, returns);
+        
+        SVCJParams p;
+        memset(&p, 0, sizeof(SVCJParams));
+        optimize_internal(returns, n_ret, &p);
+        
+        FilterResult* res = (FilterResult*)malloc(n_ret * sizeof(FilterResult));
+        run_filter_internal(returns, n_ret, &p, res);
+        
+        // Output last state
+        out_spot_vols[i] = res[n_ret-1].spot_vol;
+        out_jump_probs[i] = res[n_ret-1].jump_prob;
+        
+        free(returns);
+        free(res);
     }
-
-    // Skew adjustment
-    if (skew_accum < -3.0) out->rho = -0.8;
-    else out->rho = -0.5;
 }

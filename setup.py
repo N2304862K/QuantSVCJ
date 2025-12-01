@@ -3,7 +3,6 @@ import numpy
 from setuptools import setup, Extension
 from Cython.Build import cythonize
 
-# OpenMP Configuration
 if sys.platform.startswith("win"):
     compile_args = ["/openmp", "/O2"]
     link_args = []
