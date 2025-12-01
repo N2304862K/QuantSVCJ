@@ -3,14 +3,14 @@
 
 #include <math.h>
 #include <stdlib.h>
-#include <stdio.h>
+#include <string.h>
 
-// --- Config ---
-#define MAX_ITER 50
-#define DT (1.0/252.0)
-#define JITTER 1e-8
+// Configuration
+#define MAX_ITER 100
+#define OPT_TOL 1e-5
+#define DT 1.0 // Daily
+#define MERTON_ITER 20 // For Option Pricing Series
 
-// --- Structures ---
 typedef struct {
     double mu;
     double kappa;
@@ -22,11 +22,15 @@ typedef struct {
     double sigma_j;
 } SVCJParams;
 
-// --- Prototypes ---
+// Core Functions
 void clean_returns(double* returns, int n);
-void check_constraints(SVCJParams* p);
-double run_filter(double* returns, int n, SVCJParams* p, double* out_spot, double* out_jump);
-void fit_history(double* returns, int n, SVCJParams* p);
-void calibrate_options(double s0, double* strikes, double* expiries, int* types, double* prices, int n_opts, SVCJParams* p);
+void check_constraints(SVCJParams* params);
+
+// Optimization & Filtering
+double ukf_log_likelihood(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
+void optimize_svcj(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
+
+// Pricing
+void price_option_chain(double s0, double* strikes, double* expiries, int* types, int n_opts, SVCJParams* params, double spot_vol, double* out_prices);
 
 #endif
