@@ -3,7 +3,7 @@ from Cython.Build import cythonize
 import numpy
 import sys
 
-# Compiler flags for OpenMP
+# Platform specific OpenMP flags
 if sys.platform.startswith("win"):
     compile_args = ["/openmp"]
     link_args = []

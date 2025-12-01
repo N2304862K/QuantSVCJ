@@ -4,11 +4,12 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 // Configuration
-#define MAX_ITER 50
-#define DT (1.0/252.0) // Assume inputs are daily returns, modeling annualized params
-#define JITTER 1e-8
+#define DT (1.0/252.0)     // Time step (Daily)
+#define NM_ITER 150        // Nelder-Mead Iterations
+#define JITTER 1e-8        // Minimum variance clamp
 
 typedef struct {
     double mu;
@@ -26,6 +27,7 @@ void clean_returns(double* returns, int n);
 void check_constraints(SVCJParams* params);
 
 // Optimization & Filtering
+void estimate_initial_params(double* returns, int n, SVCJParams* p);
 double ukf_log_likelihood(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
 void optimize_svcj(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
 
