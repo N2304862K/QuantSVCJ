@@ -3,13 +3,13 @@ from Cython.Build import cythonize
 import numpy
 import sys
 
-# Platform specific OpenMP flags
+# Compiler flags for optimization and OpenMP
 if sys.platform.startswith("win"):
-    compile_args = ["/openmp"]
-    link_args = []
+    compile_args = ["/openmp", "/O2"]
 else:
-    compile_args = ["-fopenmp"]
-    link_args = ["-fopenmp"]
+    compile_args = ["-fopenmp", "-O3"]
+    
+link_args = compile_args
 
 extensions = [
     Extension(
@@ -23,6 +23,10 @@ extensions = [
 
 setup(
     name="SVCJ_Factor_Engine",
-    ext_modules=cythonize(extensions, compiler_directives={'language_level': "3"}),
-    zip_safe=False,
+    ext_modules=cythonize(extensions, compiler_directives={
+        'language_level': "3",
+        'boundscheck': False,
+        'wraparound': False,
+        'cdivision': True
+    }),
 )
