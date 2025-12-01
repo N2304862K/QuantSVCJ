@@ -5,11 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Configuration
-#define MAX_ITER 100
-#define OPT_TOL 1e-5
-#define DT 1.0 // Daily
-#define MERTON_ITER 20 // For Option Pricing Series
+// --- Configuration ---
+#define MAX_ITER 50
+#define SUB_STEPS 20        // Integrate diffusion 20 times per daily step for stability
+#define DT 1.0              // 1 Day
+#define SUB_DT (DT/SUB_STEPS)
+#define JIT_THRESH 1e-8
 
 typedef struct {
     double mu;
@@ -22,7 +23,7 @@ typedef struct {
     double sigma_j;
 } SVCJParams;
 
-// Core Functions
+// --- Prototypes ---
 void clean_returns(double* returns, int n);
 void check_constraints(SVCJParams* params);
 
