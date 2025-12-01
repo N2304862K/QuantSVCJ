@@ -33,8 +33,6 @@ cdef extern from "svcj_kernel.h":
     void run_ukf_filter(double* returns, int n_steps, SVCJParams* p, FilterState* out) nogil
     void calibrate_to_options(OptionContract* opts, int n, double spot, SVCJParams* out) nogil
 
-# --- Python API ---
-
 def analyze_asset_raw(np.ndarray[double, ndim=1] raw_prices, 
                       np.ndarray[double, ndim=2] raw_option_chain):
     cdef int n_prices = raw_prices.shape[0]
@@ -55,13 +53,9 @@ def analyze_asset_raw(np.ndarray[double, ndim=1] raw_prices,
         c_opts[i].is_call = <int>raw_option_chain[i, 3]
 
     with nogil:
-        # 1. Calc Returns
         calculate_returns_from_prices(&raw_prices[0], n_prices, c_returns)
-        # 2. Fit History
         optimize_params_history(c_returns, n_steps, &p)
-        # 3. Calibrate Options
         calibrate_to_options(c_opts, n_opts, spot_price, &p)
-        # 4. Filter
         run_ukf_filter(c_returns, n_steps, &p, states)
 
     spot_vols = np.zeros(n_steps)

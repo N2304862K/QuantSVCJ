@@ -5,22 +5,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-// --- Data Structures ---
 typedef struct {
-    double kappa;       // Mean Reversion (Daily)
-    double theta;       // Long-run Variance (Daily Scale ~1e-4)
-    double sigma_v;     // Vol-of-Vol (Daily)
-    double rho;         // Correlation
-    double lambda_j;    // Jump Intensity
-    double mu_j;        // Mean Jump Size
-    double sigma_j;     // Jump Uncertainty
-    double v0;          // Current Variance State
+    double kappa;       
+    double theta;       
+    double sigma_v;     
+    double rho;         
+    double lambda_j;    
+    double mu_j;        
+    double sigma_j;     
+    double v0;          
 } SVCJParams;
 
 typedef struct {
-    double spot_vol;       // Sqrt(vt)
-    double jump_prob;      // 0.0 to 1.0
-    double drift_residue;  // Innovation - Drift
+    double spot_vol;       
+    double jump_prob;      
+    double drift_residue;  
 } FilterState;
 
 typedef struct {
@@ -31,7 +30,6 @@ typedef struct {
     int valid; 
 } OptionContract;
 
-// --- Prototypes ---
 void calculate_returns_from_prices(double* prices, int n_prices, double* out_returns);
 void optimize_params_history(double* returns, int n_steps, SVCJParams* out);
 void calibrate_to_options(OptionContract* options, int n_opts, double spot_price, SVCJParams* out_params);
