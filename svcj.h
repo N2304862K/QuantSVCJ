@@ -4,27 +4,30 @@
 #include <math.h>
 #include <stdlib.h>
 
-// Configuration Constants (tuned for Daily Scale)
+// --- CONFIGURATION: ANNUALIZED STATE / DAILY STEP ---
+#define DAYS_PER_YEAR 252.0
+#define DT (1.0 / DAYS_PER_YEAR) 
+
+// Stability constants
 #define MAX_ITER 200
-#define TOLERANCE 1e-6
-#define JITTER_THRESHOLD 1e-9  
-#define DT 1.0                 
+#define JITTER_THRESHOLD 1e-8 
+#define MIN_VAR 1e-4 // Floor for annualized variance (1% vol)
 
 typedef struct {
-    double mu;          
-    double kappa;       
-    double theta;       
-    double sigma_v;     
-    double rho;         
-    double lambda_j;    
-    double mu_j;        
-    double sigma_j;     
+    double mu;          // Annualized Drift
+    double kappa;       // Annualized Mean Reversion
+    double theta;       // Annualized Long-Run Variance
+    double sigma_v;     // Annualized Vol-of-Vol
+    double rho;         // Correlation
+    double lambda_j;    // Annualized Jump Intensity
+    double mu_j;        // Mean Jump Size (on return scale)
+    double sigma_j;     // Jump Size Std Dev
 } SVCJParams;
 
-void clean_returns(double* returns, int n, int stride);
-void check_feller_and_fix(SVCJParams* params);
-// We use the same 'stride' for reading 'returns' and writing 'out_*' 
-double run_ukf_qmle(double* returns, int n, int stride, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
+// Core Functions
+void clean_and_copy(double* src, double* dest, int n); // New safe copy utility
+void check_stability(SVCJParams* params);
+double run_ukf_qmle(double* returns, int n, SVCJParams* params, double* out_spot_vol, double* out_jump_prob);
 void price_option_chain(double s0, double* strikes, double* expiries, int* types, int n_opts, SVCJParams* params, double* out_prices);
 
 #endif
