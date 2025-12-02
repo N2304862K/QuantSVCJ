@@ -23,46 +23,31 @@ cdef np.ndarray[double, ndim=2, mode='c'] _sanitize_input(object input_matrix):
 
 # --- 1. Asset-Specific Option Adjusted ---
 def generate_asset_option_adjusted(double[:] returns, double s0, object option_chain):
-    """
-    option_chain: List/Array of [Strike, Expiry, Type, Price]
-    """
     cdef int n = returns.shape[0]
     
-    # 1. Safe Conversion to NumPy Array first
+    # Cast Inputs to safe C-types
     cdef np.ndarray arr = np.array(option_chain, copy=False)
     cdef int n_opts = arr.shape[0]
-
-    # 2. Extract Columns with Explicit Casting (Fixes AttributeError)
     cdef np.ndarray[double, ndim=1, mode='c'] ks = np.ascontiguousarray(arr[:, 0], dtype=np.float64)
     cdef np.ndarray[double, ndim=1, mode='c'] ts = np.ascontiguousarray(arr[:, 1], dtype=np.float64)
     cdef np.ndarray[int, ndim=1, mode='c'] types = np.ascontiguousarray(arr[:, 2].astype(np.int32), dtype=np.int32)
     
-    # 3. Process Returns
     cdef np.ndarray[double, ndim=1, mode='c'] c_ret = np.ascontiguousarray(returns)
     cdef np.ndarray[double, ndim=1] spot_vol = np.zeros(n)
     cdef np.ndarray[double, ndim=1] jump_prob = np.zeros(n)
     cdef np.ndarray[double, ndim=1] model_prices = np.zeros(n_opts)
     
     cdef SVCJParams p
-    
     clean_returns(&c_ret[0], n)
     optimize_svcj(&c_ret[0], n, &p, &spot_vol[0], &jump_prob[0])
     
-    # Price
+    # Price using parameters and LAST (Current) Spot Vol
     price_option_chain(s0, &ks[0], &ts[0], &types[0], n_opts, &p, spot_vol[n-1], &model_prices[0])
     
     return {
-        "kappa": p.kappa,
-        "theta": p.theta,
-        "sigma_v": p.sigma_v,
-        "rho": p.rho,
-        "lambda_j": p.lambda_j,
-        "mu_j": p.mu_j,
-        "sigma_j": p.sigma_j,
-        "mu": p.mu,
-        "spot_vol": spot_vol,
-        "jump_prob": jump_prob,
-        "model_prices": model_prices
+        "kappa": p.kappa, "theta": p.theta, "sigma_v": p.sigma_v, "rho": p.rho,
+        "lambda_j": p.lambda_j, "mu_j": p.mu_j, "sigma_j": p.sigma_j, "mu": p.mu,
+        "spot_vol": spot_vol, "jump_prob": jump_prob, "model_prices": model_prices
     }
 
 # --- 2. Market Wide Rolling ---
@@ -74,7 +59,6 @@ def analyze_market_rolling(object market_returns, int window):
     
     if n_windows < 1: return None
     
-    # Returns [Asset, Window, 5 Params]
     cdef np.ndarray[double, ndim=3] results = np.zeros((n_assets, n_windows, 5))
     cdef SVCJParams p
     cdef int i, w
@@ -124,19 +108,29 @@ def analyze_market_current(object market_returns):
         "params": out_params
     }
 
-# --- 4. Residue Analysis ---
-def generate_residue_analysis(double[:] returns, int forward_window):
+# --- 4. Asset-Specific Drift-Realized Residue ---
+def generate_residue_analysis(double[:] returns):
+    """
+    Returns the Realized Residue vector aligned to the input time.
+    Residue[t] = Return[t] - (Model Drift)
+    Positive Residue = Return exceeded model expectation (Alpha/Noise)
+    """
     cdef int n = returns.shape[0]
     cdef np.ndarray[double, ndim=1, mode='c'] c_ret = np.ascontiguousarray(returns)
-    cdef np.ndarray[double, ndim=1] residues = np.zeros(n - forward_window)
+    cdef np.ndarray[double, ndim=1] residues = np.zeros(n)
     cdef SVCJParams p
     
+    # Fit model to get drift parameters
     clean_returns(&c_ret[0], n)
     optimize_svcj(&c_ret[0], n, &p, NULL, NULL)
     
+    # Annualized drift converted to daily
+    cdef double daily_drift = p.mu * (1.0/252.0)
+    
     cdef int t
-    for t in range(n - forward_window):
-        # Return - Drift
-        residues[t] = c_ret[t + forward_window] - (p.mu * (1.0/252.0));
+    for t in range(n):
+        # Calculation: Realized Return - Expected Return
+        # The last element residues[n-1] is the residue for the Current Date.
+        residues[t] = c_ret[t] - daily_drift
         
     return residues
