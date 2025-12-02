@@ -8,7 +8,7 @@
 
 // Configuration
 #define DT (1.0/252.0)     // Time step (Daily)
-#define NM_ITER 200        // Nelder-Mead Iterations
+#define NM_ITER 250        // Increased Iterations for MAP convergence
 #define SQRT_2PI 2.50662827463
 
 typedef struct {
